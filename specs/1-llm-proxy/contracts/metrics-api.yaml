@@ -1,0 +1,134 @@
+openapi: 3.0.3
+info:
+  title: LLM Proxy Health & Metrics API
+  description: |
+    API для проверки здоровья и сбора метрик прокси-сервера.
+
+    ## Метрики Prometheus
+    Эндпоинт `/metrics` возвращает метрики в текстовом формате Prometheus.
+
+    ### Доступные метрики
+
+    | Метрика | Тип | Описание |
+    |---------|-----|----------|
+    | `llm_proxy_requests_total` | Counter | Счётчик запросов |
+    | `llm_proxy_queue_overflow_total` | Counter | Счётчик переполнений очереди |
+    | `llm_proxy_queue_wait_seconds` | Histogram | Время ожидания в очереди |
+    | `llm_proxy_provider_latency_seconds` | Histogram | Задержка провайдера |
+    | `llm_proxy_queue_length` | Gauge | Длина очереди |
+    | `llm_proxy_in_flight` | Gauge | Запросы в обработке |
+  version: 1.0.0
+
+servers:
+  - url: /
+    description: Root
+
+paths:
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Проверка здоровья
+      description: Возвращает статус здоровья сервиса
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Сервис здоров
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: "ok"
+                env: "production"
+        '503':
+          description: Сервис нездоров
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: "error"
+                env: "production"
+
+  /metrics:
+    get:
+      operationId: metrics
+      summary: Метрики Prometheus
+      description: |
+        Возвращает метрики в текстовом формате Prometheus.
+
+        ### Лейблы метрик
+
+        **llm_proxy_requests_total**:
+        - `endpoint` - эндпоинт (/v1/chat/completions, /v1/chat/invoke)
+        - `priority` - приоритет (p1, p2, p3)
+        - `status` - статус (success, error)
+        - `error_code` - код ошибки (none, invalid_request, provider_error, etc.)
+
+        **llm_proxy_queue_wait_seconds**:
+        - `endpoint` - эндпоинт
+        - `priority` - приоритет
+
+        **llm_proxy_queue_length**:
+        - `priority` - приоритет
+
+        **llm_proxy_in_flight**:
+        - `priority` - приоритет
+      tags:
+        - Metrics
+      responses:
+        '200':
+          description: Метрики в формате Prometheus
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP llm_proxy_requests_total Total number of requests
+                # TYPE llm_proxy_requests_total counter
+                llm_proxy_requests_total{endpoint="/v1/chat/completions",priority="p1",status="success",error_code="none"} 100
+                llm_proxy_requests_total{endpoint="/v1/chat/completions",priority="p2",status="error",error_code="provider_error"} 5
+
+                # HELP llm_proxy_queue_wait_seconds Time spent waiting in queue
+                # TYPE llm_proxy_queue_wait_seconds histogram
+                llm_proxy_queue_wait_seconds_bucket{endpoint="/v1/chat/completions",priority="p1",le="0.001"} 50
+                llm_proxy_queue_wait_seconds_bucket{endpoint="/v1/chat/completions",priority="p1",le="0.01"} 80
+                llm_proxy_queue_wait_seconds_bucket{endpoint="/v1/chat/completions",priority="p1",le="+Inf"} 100
+                llm_proxy_queue_wait_seconds_sum{endpoint="/v1/chat/completions",priority="p1"} 0.5
+                llm_proxy_queue_wait_seconds_count{endpoint="/v1/chat/completions",priority="p1"} 100
+
+                # HELP llm_proxy_queue_length Current queue length
+                # TYPE llm_proxy_queue_length gauge
+                llm_proxy_queue_length{priority="p1"} 0
+                llm_proxy_queue_length{priority="p2"} 5
+                llm_proxy_queue_length{priority="p3"} 2
+
+                # HELP llm_proxy_in_flight Current in-flight requests
+                # TYPE llm_proxy_in_flight gauge
+                llm_proxy_in_flight{priority="p1"} 2
+                llm_proxy_in_flight{priority="p2"} 1
+                llm_proxy_in_flight{priority="p3"} 0
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - env
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+          description: Статус здоровья
+        env:
+          type: string
+          description: Окружение (development, staging, production)
+          example: "production"
+
+tags:
+  - name: Health
+    description: Проверка здоровья
+  - name: Metrics
+    description: Метрики Prometheus

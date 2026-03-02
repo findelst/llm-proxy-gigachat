@@ -1,0 +1,33 @@
+{
+  "model": "GigaChat",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Ты ассистент с доступом к функциям."
+    },
+    {
+      "role": "user",
+      "content": "Какая погода в Москве?"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Получить текущую погоду в городе",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string",
+              "description": "Название города"
+            }
+          },
+          "required": ["city"]
+        }
+      }
+    }
+  ],
+  "temperature": 0.0
+}

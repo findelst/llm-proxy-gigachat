@@ -1,0 +1,369 @@
+openapi: 3.0.3
+info:
+  title: LLM Proxy Chat API
+  description: |
+    API для проксирования запросов к GigaChat с поддержкой очереди приоритетов и кэширования.
+
+    ## Приоритеты
+    Приоритет запроса можно указать через заголовок `X-Priority` или поле `priority` в теле.
+    - `p1` (highest) - максимальный приоритет
+    - `p2` (default) - стандартный приоритет
+    - `p3` (lowest) - низший приоритет
+    - `highest` или `p0` → p1
+    - `lowest` → последний приоритет
+
+    ## Заголовки ответа
+    - `x-llm-proxy-request-id` - UUID запроса
+    - `x-llm-proxy-queue-wait-ms` - время ожидания в очереди (мс)
+    - `x-llm-proxy-provider-latency-ms` - время ответа провайдера (мс)
+    - `x-llm-proxy-priority` - использованный приоритет
+    - `x-request-id` - echo из запроса или сгенерированный UUID
+  version: 1.0.0
+  contact:
+    name: LLM Proxy Team
+
+servers:
+  - url: /v1
+    description: API v1
+
+paths:
+  /chat/completions:
+    post:
+      operationId: chatCompletions
+      summary: Завершение чата
+      description: |
+        Отправляет запрос к GigaChat для генерации завершения чата.
+        Совместим с GigaChat API.
+      tags:
+        - Chat
+      parameters:
+        - name: X-Priority
+          in: header
+          description: Приоритет запроса (p1, p2, p3, highest, lowest)
+          required: false
+          schema:
+            type: string
+            enum: [p1, p2, p3, highest, lowest, p0]
+        - name: x-request-id
+          in: header
+          description: Идентификатор запроса (echoed в ответе)
+          required: false
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              simple:
+                summary: Простой запрос
+                value:
+                  messages:
+                    - role: user
+                      content: "Привет, как дела?"
+              with_params:
+                summary: С параметрами
+                value:
+                  model: "GigaChat"
+                  messages:
+                    - role: system
+                      content: "Ты полезный ассистент."
+                    - role: user
+                      content: "Расскажи о Kotlin"
+                  temperature: 0.7
+                  max_tokens: 1000
+      responses:
+        '200':
+          description: Успешный ответ
+          headers:
+            x-llm-proxy-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: UUID запроса
+            x-llm-proxy-queue-wait-ms:
+              schema:
+                type: integer
+              description: Время ожидания в очереди (мс)
+            x-llm-proxy-provider-latency-ms:
+              schema:
+                type: integer
+              description: Время ответа провайдера (мс)
+            x-llm-proxy-priority:
+              schema:
+                type: string
+              description: Использованный приоритет
+            x-request-id:
+              schema:
+                type: string
+              description: Echo из запроса или сгенерированный UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+        '400':
+          description: Некорректный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_json:
+                  summary: Некорректный JSON
+                  value:
+                    error:
+                      code: invalid_request
+                      http_status: 400
+                      message: "Invalid JSON payload"
+                      request_id: "550e8400-e29b-41d4-a716-446655440000"
+                missing_messages:
+                  summary: Отсутствует поле messages
+                  value:
+                    error:
+                      code: invalid_request
+                      http_status: 400
+                      message: "messages field is required"
+                      request_id: "550e8400-e29b-41d4-a716-446655440001"
+                streaming_not_supported:
+                  summary: Streaming не поддерживается
+                  value:
+                    error:
+                      code: invalid_request
+                      http_status: 400
+                      message: "Streaming is not supported"
+                      request_id: "550e8400-e29b-41d4-a716-446655440002"
+        '429':
+          description: Переполнение очереди
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: queue_overflow
+                  http_status: 429
+                  message: "Queue is full. Try again later."
+                  request_id: "550e8400-e29b-41d4-a716-446655440003"
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: provider_error
+                  http_status: 500
+                  message: "GigaChat API error: timeout"
+                  request_id: "550e8400-e29b-41d4-a716-446655440004"
+
+  /chat/invoke:
+    post:
+      operationId: chatInvoke
+      summary: Завершение чата с метриками в теле
+      description: |
+        Аналогично `/chat/completions`, но включает метрики в тело ответа.
+      tags:
+        - Chat
+      parameters:
+        - name: X-Priority
+          in: header
+          description: Приоритет запроса
+          required: false
+          schema:
+            type: string
+        - name: x-request-id
+          in: header
+          description: Идентификатор запроса
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+      responses:
+        '200':
+          description: Успешный ответ с метриками
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvokeResponse'
+        '400':
+          description: Некорректный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Переполнение очереди
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required:
+        - messages
+      properties:
+        model:
+          type: string
+          description: Идентификатор модели (опционально, используется по умолчанию)
+          example: "GigaChat"
+        messages:
+          type: array
+          description: Массив сообщений чата
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        temperature:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 2
+          description: Температура выборки
+          example: 0.7
+        top_p:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Nucleus sampling параметр
+          example: 1.0
+        max_tokens:
+          type: integer
+          minimum: 1
+          description: Максимум токенов в ответе
+          example: 1000
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: Последовательности остановки
+        stream:
+          type: boolean
+          description: Должно быть false (streaming не поддерживается)
+          default: false
+        priority:
+          type: string
+          description: Приоритет запроса (альтернатива заголовку X-Priority)
+          enum: [p1, p2, p3, highest, lowest]
+
+    ChatMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+          description: Роль отправителя
+        content:
+          oneOf:
+            - type: string
+            - type: array
+            - type: object
+          description: Содержимое сообщения
+
+    ChatCompletionResponse:
+      type: object
+      description: Ответ от GigaChat (структура из langchain4j-gigachat)
+      properties:
+        id:
+          type: string
+          description: Идентификатор ответа
+        choices:
+          type: array
+          items:
+            type: object
+        usage:
+          $ref: '#/components/schemas/Usage'
+        model:
+          type: string
+        request_id:
+          type: string
+          description: Идентификатор запроса (добавлено прокси)
+
+    Usage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+
+    InvokeResponse:
+      type: object
+      description: Ответ с метриками в теле
+      allOf:
+        - $ref: '#/components/schemas/ChatCompletionResponse'
+        - type: object
+          properties:
+            metrics:
+              $ref: '#/components/schemas/QueueMetrics'
+
+    QueueMetrics:
+      type: object
+      properties:
+        queue_wait_ms:
+          type: integer
+          description: Время ожидания в очереди (мс)
+        provider_latency_ms:
+          type: integer
+          description: Время ответа провайдера (мс)
+        priority:
+          type: string
+          description: Использованный приоритет
+        endpoint:
+          type: string
+          description: Эндпоинт запроса
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - http_status
+            - message
+            - request_id
+          properties:
+            code:
+              type: string
+              enum: [invalid_request, queue_overflow, provider_error, internal]
+              description: Код ошибки
+            http_status:
+              type: integer
+              description: HTTP статус код
+            message:
+              type: string
+              description: Человекочитаемое сообщение
+            request_id:
+              type: string
+              description: UUID запроса для трассировки
+
+tags:
+  - name: Chat
+    description: Операции чата

@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: llm-proxy-test
+
+server:
+  port: 0 # Random port for tests
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+llm:
+  proxy:
+    api:
+      base-url: http://mock-gigachat.local
+      key: test-key
+      timeout: 30s
+    model:
+      default-name: GigaChat-Mock
+      temperature: 0.0
+      top-p: 1.0
+      max-tokens: 1000
+    queue:
+      priority-slots:
+        p1: 2
+        p2: 1
+        p3: 1
+      default-priority: p2
+      max-length: 50
+    cache:
+      enabled: false # Disable cache for tests
+      ttl: 1m
+      max-size: 100
+
+logging:
+  level:
+    root: WARN
+    ru.ddd.llmproxy: DEBUG

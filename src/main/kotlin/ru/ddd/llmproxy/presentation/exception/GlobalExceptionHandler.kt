@@ -1,0 +1,154 @@
+package ru.ddd.llmproxy.presentation.exception
+
+import mu.KotlinLogging
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.http.converter.HttpMessageNotReadableException
+import org.springframework.web.bind.MethodArgumentNotValidException
+import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.RestControllerAdvice
+import org.springframework.web.context.request.WebRequest
+import ru.ddd.llmproxy.domain.model.InvalidRequestError
+import ru.ddd.llmproxy.domain.model.LlmProxyException
+import ru.ddd.llmproxy.domain.model.ProviderError
+import ru.ddd.llmproxy.domain.model.QueueOverflowError
+import java.util.UUID
+
+private val log = KotlinLogging.logger {}
+
+/**
+ * Global exception handler for LLM Proxy.
+ *
+ * Converts all exceptions to standardized error responses.
+ */
+@RestControllerAdvice
+class GlobalExceptionHandler {
+
+    /**
+     * Handles LLM Proxy specific exceptions.
+     */
+    @ExceptionHandler(LlmProxyException::class)
+    fun handleLlmProxyException(ex: LlmProxyException, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.warn { "LLM Proxy error: ${ex.code} - ${ex.message} (requestId=$requestId)" }
+
+        return ResponseEntity
+            .status(ex.httpStatus)
+            .body(ErrorResponse.of(
+                code = ex.code,
+                httpStatus = ex.httpStatus,
+                message = ex.message ?: "Unknown error",
+                requestId = requestId
+            ))
+    }
+
+    /**
+     * Handles invalid request errors.
+     */
+    @ExceptionHandler(InvalidRequestError::class)
+    fun handleInvalidRequestError(ex: InvalidRequestError, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.warn { "Invalid request: ${ex.message} (requestId=$requestId)" }
+
+        return ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(ErrorResponse.invalidRequest(ex.message ?: "Invalid request", requestId))
+    }
+
+    /**
+     * Handles queue overflow errors.
+     */
+    @ExceptionHandler(QueueOverflowError::class)
+    fun handleQueueOverflowError(ex: QueueOverflowError, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.warn { "Queue overflow (priority=${ex.priority}, requestId=$requestId)" }
+
+        return ResponseEntity
+            .status(HttpStatus.TOO_MANY_REQUESTS)
+            .body(ErrorResponse.queueOverflow(requestId))
+    }
+
+    /**
+     * Handles provider errors.
+     */
+    @ExceptionHandler(ProviderError::class)
+    fun handleProviderError(ex: ProviderError, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.error { "Provider error: ${ex.message} (status=${ex.providerStatus}, requestId=$requestId)" }
+
+        return ResponseEntity
+            .status(ex.httpStatus)
+            .body(ErrorResponse.providerError(ex.message ?: "Provider error", requestId, ex.httpStatus))
+    }
+
+    /**
+     * Handles JSON parsing errors.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException::class)
+    fun handleHttpMessageNotReadable(ex: HttpMessageNotReadableException, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.warn { "Invalid JSON: ${ex.message} (requestId=$requestId)" }
+
+        return ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(ErrorResponse.invalidRequest("Invalid JSON payload", requestId))
+    }
+
+    /**
+     * Handles validation errors.
+     */
+    @ExceptionHandler(MethodArgumentNotValidException::class)
+    fun handleValidationException(ex: MethodArgumentNotValidException, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+        val errors = ex.bindingResult.fieldErrors.joinToString("; ") { "${it.field}: ${it.defaultMessage}" }
+
+        log.warn { "Validation error: $errors (requestId=$requestId)" }
+
+        return ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(ErrorResponse.invalidRequest(errors, requestId))
+    }
+
+    /**
+     * Handles illegal argument exceptions.
+     */
+    @ExceptionHandler(IllegalArgumentException::class)
+    fun handleIllegalArgumentException(ex: IllegalArgumentException, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.warn { "Invalid argument: ${ex.message} (requestId=$requestId)" }
+
+        return ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(ErrorResponse.invalidRequest(ex.message ?: "Invalid argument", requestId))
+    }
+
+    /**
+     * Handles all other unexpected exceptions.
+     */
+    @ExceptionHandler(Exception::class)
+    fun handleGenericException(ex: Exception, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.error(ex) { "Unexpected error (requestId=$requestId): ${ex.message}" }
+
+        return ResponseEntity
+            .status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(ErrorResponse.internal(requestId, ex.message ?: "Unknown error"))
+    }
+
+    /**
+     * Extracts or generates a request ID from the request context.
+     */
+    private fun getRequestId(request: WebRequest): String {
+        // Try to get from request header (set by RequestIdMiddleware)
+        return request.getHeader("x-request-id")
+            ?: request.getHeader("x-llm-proxy-request-id")
+            ?: UUID.randomUUID().toString()
+    }
+}
