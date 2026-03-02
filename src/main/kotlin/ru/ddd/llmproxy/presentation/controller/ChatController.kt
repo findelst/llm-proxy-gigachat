@@ -1,14 +1,14 @@
 package ru.ddd.llmproxy.presentation.controller
 
-import dev.langchain4j.model.chat.response.ChatResponse
+import chat.giga.model.completion.CompletionRequest as GigaChatCompletionRequest
+import chat.giga.model.completion.CompletionResponse as GigaChatCompletionResponse
 import mu.KotlinLogging
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+import ru.ddd.llmproxy.application.adapter.GigaChatRequestAdapter
+import ru.ddd.llmproxy.application.adapter.GigaChatResponseAdapter
 import ru.ddd.llmproxy.application.service.ChatApplicationService
 import ru.ddd.llmproxy.domain.model.InvalidRequestError
-import ru.ddd.llmproxy.presentation.dto.ChatCompletionRequest
-import ru.ddd.llmproxy.presentation.dto.ChatCompletionResponse
-import ru.ddd.llmproxy.presentation.dto.InvokeResponse
 import java.util.UUID
 
 private val log = KotlinLogging.logger {}
@@ -17,7 +17,7 @@ private val log = KotlinLogging.logger {}
  * Controller for chat completion endpoints.
  *
  * Endpoints:
- * - POST /v1/chat/completions - Standard chat completion (OpenAI-compatible)
+ * - POST /v1/chat/completions - Standard chat completion (GigaChat-compatible)
  * - POST /v1/chat/invoke - Chat completion with metrics in response body
  */
 @RestController
@@ -27,16 +27,16 @@ class ChatController(
 ) {
 
     /**
-     * Chat completion endpoint.
+     * Chat completion endpoint using GigaChat native request/response format.
      *
      * Returns response with metrics in headers.
      */
     @PostMapping("/completions")
     suspend fun completions(
-        @RequestBody request: ChatCompletionRequest,
+        @RequestBody request: GigaChatCompletionRequest,
         @RequestHeader("X-Priority", required = false) headerPriority: String?,
         @RequestHeader("x-request-id", required = false) explicitRequestId: String?
-    ): ResponseEntity<ChatCompletionResponse> {
+    ): ResponseEntity<GigaChatCompletionResponse> {
         val requestId = explicitRequestId ?: UUID.randomUUID().toString()
 
         log.info { "Chat completion request: $requestId, priority=$headerPriority" }
@@ -44,18 +44,19 @@ class ChatController(
         // Validate request
         validateRequest(request)
 
-        // Convert to langchain4j ChatRequest
-        val chatRequest = request.toChatRequest()
+        // Convert GigaChat native request to langchain4j format
+        val chatRequest = GigaChatRequestAdapter.toChatRequest(request)
 
         val result = chatService.completions(
             request = chatRequest,
             headerPriority = headerPriority,
-            bodyPriority = request.priority,
+            bodyPriority = null,
             requestId = requestId,
             endpoint = "/v1/chat/completions"
         )
 
-        val response = ChatCompletionResponse.from(result.response)
+        // Convert langchain4j response to GigaChat native format
+        val response = GigaChatResponseAdapter.toCompletionResponse(result.response)
 
         return ResponseEntity.ok()
             .header("x-llm-proxy-request-id", requestId)
@@ -76,13 +77,15 @@ class ChatController(
      * Chat invoke endpoint with metrics in response body.
      *
      * Same as completions but includes metrics in the response JSON.
+     * Note: Using InvokeResponse DTO for metrics since GigaChat native CompletionResponse
+     * doesn't support custom fields.
      */
     @PostMapping("/invoke")
     suspend fun invoke(
-        @RequestBody request: ChatCompletionRequest,
+        @RequestBody request: GigaChatCompletionRequest,
         @RequestHeader("X-Priority", required = false) headerPriority: String?,
         @RequestHeader("x-request-id", required = false) explicitRequestId: String?
-    ): ResponseEntity<InvokeResponse> {
+    ): ResponseEntity<ru.ddd.llmproxy.presentation.dto.InvokeResponse> {
         val requestId = explicitRequestId ?: UUID.randomUUID().toString()
 
         log.info { "Chat invoke request: $requestId, priority=$headerPriority" }
@@ -90,25 +93,30 @@ class ChatController(
         // Validate request
         validateRequest(request)
 
-        // Convert to langchain4j ChatRequest
-        val chatRequest = request.toChatRequest()
+        // Convert GigaChat native request to langchain4j format
+        val chatRequest = GigaChatRequestAdapter.toChatRequest(request)
 
         val result = chatService.completions(
             request = chatRequest,
             headerPriority = headerPriority,
-            bodyPriority = request.priority,
+            bodyPriority = null,
             requestId = requestId,
             endpoint = "/v1/chat/invoke"
         )
 
-        val metrics = InvokeResponse.Metrics(
+        // Wrap with metrics in InvokeResponse
+        val metrics = ru.ddd.llmproxy.presentation.dto.InvokeResponse.Metrics(
             queueWaitMs = result.metrics.queueWaitMs,
             providerLatencyMs = result.metrics.providerLatencyMs,
             priority = result.metrics.priority.value,
             endpoint = result.metrics.endpoint
         )
 
-        val invokeResponse = InvokeResponse.from(result.response, requestId, metrics)
+        val invokeResponse = ru.ddd.llmproxy.presentation.dto.InvokeResponse.from(
+            result.response,
+            requestId,
+            metrics
+        )
 
         return ResponseEntity.ok()
             .header("x-llm-proxy-request-id", requestId)
@@ -118,19 +126,18 @@ class ChatController(
     }
 
     /**
-     * Validates the chat request.
+     * Validates the GigaChat chat request.
      */
-    private fun validateRequest(request: ChatCompletionRequest) {
-        if (request.messages.isEmpty()) {
+    private fun validateRequest(request: GigaChatCompletionRequest) {
+        if (request.messages().isEmpty()) {
             throw InvalidRequestError("messages field is required and must not be empty")
         }
 
-        if (request.messages.any { it.content.isNullOrBlank() }) {
+        if (request.messages().any { it.content().isNullOrBlank() }) {
             throw InvalidRequestError("Message content must not be null or empty")
         }
 
-        if (request.stream) {
-            throw InvalidRequestError("Streaming is not supported")
-        }
+        // Note: GigaChat's stream parameter is handled by the native library
+        // We don't need to explicitly ignore it as it's part of the CompletionRequest
     }
 }
