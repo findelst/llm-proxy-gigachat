@@ -2,11 +2,9 @@ package ru.ddd.llmproxy.infrastructure.queue
 
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Semaphore
 import mu.KotlinLogging
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Component
@@ -15,6 +13,7 @@ import ru.ddd.llmproxy.domain.model.*
 import ru.ddd.llmproxy.domain.service.QueueService
 import ru.ddd.llmproxy.domain.service.QueueOverflowException
 import ru.ddd.llmproxy.infrastructure.config.LlmProxyProperties
+import java.util.concurrent.atomic.AtomicLong
 
 private val log = KotlinLogging.logger {}
 
@@ -22,9 +21,10 @@ private val log = KotlinLogging.logger {}
  * Coroutine-based priority queue implementation.
  *
  * Features:
+ * - Global priority ordering using single PriorityChannel
  * - FIFO ordering within each priority level
- * - Bounded parallelism per priority using semaphores
  * - Overflow protection with configurable max length
+ * - Automatic retry with exponential backoff
  * - Metrics integration
  */
 @Component
@@ -36,10 +36,14 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
 
     private val scope = CoroutineScope(dispatcher + SupervisorJob())
 
-    // Per-priority channels and semaphores
-    private val priorityChannels: Map<Priority, Channel<QueuedRequest<T, R>>>
-    private val prioritySemaphores: Map<Priority, Semaphore>
-    private val prioritySlots: List<PrioritySlot>
+    // Single priority channel for global ordering
+    private val priorityChannel: PriorityChannel<QueuedRequest<T, R>>
+
+    // Sequence counter for FIFO within priority
+    private val sequenceCounter = AtomicLong(0)
+
+    // Retry executor
+    private val retryExecutor: RetryExecutor
 
     // Queue state tracking
     private val _queueLengths = MutableStateFlow<Map<Priority, Int>>(emptyMap())
@@ -52,23 +56,22 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
     private var isShutdown = false
 
     init {
-        prioritySlots = properties.queue.prioritySlots.entries
-            .map { PrioritySlot.fromEntry(it) }
-            .sortedBy { it.toPriority().level }
-
-        priorityChannels = prioritySlots.associate { slot ->
-            val priority = slot.toPriority()
-            priority to Channel(properties.queue.maxLength)
+        // Log warning if deprecated priority-slots configuration is present
+        val prioritySlots = properties.queue.prioritySlots
+        if (prioritySlots.isNotEmpty()) {
+            log.warn {
+                "Configuration 'priority-slots' is deprecated and will be ignored. " +
+                        "Per-priority concurrency limits have been removed. " +
+                        "Queue now uses strict FIFO ordering within each priority level."
+            }
         }
 
-        prioritySemaphores = prioritySlots.associate { slot ->
-            val priority = slot.toPriority()
-            priority to Semaphore(slot.maxConcurrency)
-        }
+        priorityChannel = PriorityChannel(properties.queue.maxLength)
+        retryExecutor = RetryExecutor(properties.queue.retry, metricsPort)
 
         log.info {
-            "Initialized priority queue with slots: " +
-                    prioritySlots.joinToString { "${it.name}=${it.maxConcurrency}" }
+            "Initialized FIFO priority queue with max-length=${properties.queue.maxLength}, " +
+                    "retry enabled=${properties.queue.retry.enabled}"
         }
     }
 
@@ -77,11 +80,16 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
             throw QueueOverflowException("Queue is shutting down")
         }
 
-        val channel = priorityChannels[request.priority]
-            ?: throw QueueOverflowException("Unknown priority: ${request.priority}")
+        // Get sequence number for FIFO ordering within priority
+        val sequenceNumber = sequenceCounter.getAndIncrement()
 
-        // Try to enqueue, throw overflow if full
-        val result = channel.trySend(request)
+        // Try to enqueue with priority
+        val result = priorityChannel.trySend(
+            request,
+            request.priority.level,
+            sequenceNumber
+        )
+
         if (result.isFailure) {
             metricsPort.recordQueueOverflow(request.priority)
             throw QueueOverflowError(priority = request.priority)
@@ -89,7 +97,7 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
 
         updateQueueLength(request.priority, 1)
 
-        log.debug { "Enqueued request ${request.id} with priority ${request.priority}" }
+        log.debug { "Enqueued request ${request.id} with priority ${request.priority}, seq=$sequenceNumber" }
 
         // Wait for result
         return request.deferred.await()
@@ -125,55 +133,75 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
 
     override suspend fun shutdown() {
         isShutdown = true
-        priorityChannels.values.forEach { it.close() }
+        priorityChannel.close()
         log.info { "Priority queue shutdown initiated" }
     }
 
     /**
-     * Starts processing requests from all priority channels.
+     * Starts processing requests from the priority channel.
      * Should be called during application startup.
      */
     fun startProcessing(processor: suspend (T) -> R) {
-        prioritySlots.forEach { slot ->
-            val priority = slot.toPriority()
-            val channel = priorityChannels[priority]!!
-            val semaphore = prioritySemaphores[priority]!!
+        // Single consumer that processes items by priority
+        scope.launch {
+            while (!priorityChannel.isClosedForReceive) {
+                try {
+                    val prioritizedItem = priorityChannel.receive()
+                    val request = prioritizedItem.item
 
-            scope.launch {
-                for (request in channel) {
                     launch {
-                        processRequest(request, semaphore, processor, priority)
+                        processRequest(request, processor, request.priority)
                     }
+                } catch (e: Exception) {
+                    if (priorityChannel.isClosedForReceive && priorityChannel.isEmpty) {
+                        break
+                    }
+                    log.error(e) { "Error receiving from priority channel" }
                 }
             }
         }
 
-        log.info { "Started processing for all priority levels" }
+        log.info { "Started priority channel processing" }
     }
 
     /**
-     * Processes a single request with semaphore-controlled concurrency.
+     * Processes a single request with retry support.
      */
     private suspend fun processRequest(
         request: QueuedRequest<T, R>,
-        semaphore: Semaphore,
         processor: suspend (T) -> R,
         priority: Priority
     ) {
         updateQueueLength(priority, -1)
+        updateInFlight(priority, 1)
+        metricsPort.setInFlight(priority, inFlight(priority))
+        metricsPort.setQueueLength(priority, queueLength(priority))
 
-        semaphore.acquire()
         try {
-            updateInFlight(priority, 1)
-            metricsPort.setInFlight(priority, inFlight(priority))
-            metricsPort.setQueueLength(priority, queueLength(priority))
-
             // Mark processing start for queue wait time calculation
             request.metrics = request.metrics.startProcessing()
 
             log.debug { "Processing request ${request.id} with priority $priority" }
 
-            val result = processor(request.payload)
+            val result = if (properties.queue.retry.enabled) {
+                // Execute with retry
+                var retryCount = 0
+                retryExecutor.executeWithRetry(
+                    operation = { processor(request.payload) },
+                    priority = priority,
+                    onRetry = { attempt, _ ->
+                        retryCount = attempt
+                        request.metrics = request.metrics.recordRetry()
+                    }
+                ).also {
+                    if (retryCount > 0) {
+                        metricsPort.recordRetrySuccess(retryCount + 1)
+                    }
+                }
+            } else {
+                // Execute without retry
+                processor(request.payload)
+            }
 
             // Mark processing complete for latency calculation
             request.metrics = request.metrics.completeProcessing()
@@ -183,7 +211,6 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
             request.completeExceptionally(e)
             log.error(e) { "Error processing request ${request.id}" }
         } finally {
-            semaphore.release()
             updateInFlight(priority, -1)
             metricsPort.setInFlight(priority, inFlight(priority))
         }
@@ -205,7 +232,7 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
     @PreDestroy
     fun destroy() {
         isShutdown = true
-        priorityChannels.values.forEach { it.close() }
+        priorityChannel.close()
         scope.cancel()
         log.info { "Priority queue destroyed" }
     }

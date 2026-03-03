@@ -27,9 +27,12 @@ private val log = KotlinLogging.logger {}
  *
  * These tests verify:
  * - Priority ordering (higher priority processed first)
- * - Concurrency limits per priority level
+ * - FIFO ordering within same priority level
  * - Queue overflow handling
  * - Fair scheduling within same priority
+ *
+ * Note: FIFO ordering is verified at the PriorityChannel level in PriorityChannelTest.
+ * These integration tests verify the overall system behavior.
  */
 @SpringBootTest
 @Import(TestConfig::class)
@@ -41,57 +44,39 @@ class PriorityQueueConcurrencyTest {
     @Autowired
     private lateinit var properties: LlmProxyProperties
 
-    // ==================== Concurrency Limit Tests ====================
+    // ==================== Concurrent Processing Tests ====================
 
     @Test
-    fun `should respect max concurrency per priority`() = runTest {
-        val concurrencyLimit = properties.queue.prioritySlots["p1"] ?: 2
-        val totalRequests = concurrencyLimit * 3
+    fun `should process all requests without concurrency limits`() = runTest {
+        val totalRequests = 10
 
-        mockProvider.setDelay(200) // Slow responses to observe concurrency
+        mockProvider.setDelay(50) // Fast responses
 
-        val startTime = System.currentTimeMillis()
-        val inFlightMax = AtomicInteger(0)
-        val currentInFlight = AtomicInteger(0)
-        val completedTimes = mutableListOf<Long>()
+        val completedCount = AtomicInteger(0)
 
-        // Track concurrent execution
         val trackingProvider = object : ChatProviderPort<ChatRequest> by mockProvider {
             override suspend fun generate(request: ChatRequest): ChatResponse {
-                val current = currentInFlight.incrementAndGet()
-                inFlightMax.updateAndGet { maxOf(it, current) }
-
                 val result = mockProvider.generate(request)
-
-                currentInFlight.decrementAndGet()
-                synchronized(completedTimes) {
-                    completedTimes.add(System.currentTimeMillis() - startTime)
-                }
-
+                completedCount.incrementAndGet()
                 return result
             }
         }
 
         val jobs = (1..totalRequests).map { index ->
             async(Dispatchers.Default) {
-                val request = ChatRequest.builder()
-                    .messages(listOf(UserMessage.from("Request $index")))
-                    .build()
-                trackingProvider.generate(request)
+                trackingProvider.generate(
+                    ChatRequest.builder()
+                        .messages(listOf(UserMessage.from("Request $index")))
+                        .build()
+                )
             }
         }
 
         jobs.awaitAll()
 
-        // Verify max concurrency was not exceeded
-        val actualMaxConcurrency = inFlightMax.get()
-        log.info { "Max concurrent requests: $actualMaxConcurrency (limit: $concurrencyLimit)" }
-
-        // With concurrency limit, requests should take longer than if all ran in parallel
-        val totalTime = completedTimes.maxOrNull() ?: 0
-        val minExpectedTime = (totalRequests / concurrencyLimit) * 200L * 0.8 // Allow 20% tolerance
-
-        log.info { "Total time: ${totalTime}ms, min expected: ${minExpectedTime}ms" }
+        // All requests should complete without semaphore blocking
+        Assertions.assertEquals(totalRequests, completedCount.get())
+        log.info { "All $totalRequests requests completed successfully" }
     }
 
     // ==================== Priority Ordering Tests ====================

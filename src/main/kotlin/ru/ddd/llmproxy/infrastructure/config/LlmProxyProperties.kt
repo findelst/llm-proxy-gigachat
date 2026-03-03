@@ -1,6 +1,7 @@
 package ru.ddd.llmproxy.infrastructure.config
 
 import org.springframework.boot.context.properties.ConfigurationProperties
+import ru.ddd.llmproxy.domain.model.RetryConfig
 import java.time.Duration
 
 /**
@@ -35,9 +36,14 @@ data class LlmProxyProperties(
     }
 
     data class QueueConfig(
-        val prioritySlots: Map<String, Int> = mapOf("p1" to 1, "p2" to 1, "p3" to 1),
+        @Deprecated(
+            message = "priority-slots is deprecated. Per-priority concurrency limits have been removed. " +
+                    "The queue now uses strict FIFO ordering within each priority level. This configuration is ignored."
+        )
+        val prioritySlots: Map<String, Int> = emptyMap(),
         val defaultPriority: String = "p1",
-        val maxLength: Int = 100
+        val maxLength: Int = 100,
+        val retry: RetryConfig = RetryConfig()
     )
 
     data class CacheConfig(
