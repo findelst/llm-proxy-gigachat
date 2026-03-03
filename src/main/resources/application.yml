@@ -40,6 +40,8 @@ llm:
       # The queue now uses strict FIFO ordering within each priority level
       default-priority: ${LLM_PRIORITY_DEFAULT:p2}
       max-length: ${LLM_QUEUE_MAX_LEN:100}
+      timeout-minutes: ${LLM_QUEUE_TIMEOUT_MINUTES:10}
+      timeout-check-interval-ms: ${LLM_QUEUE_TIMEOUT_CHECK_MS:60000}
       retry:
         enabled: ${LLM_RETRY_ENABLED:true}
         max-attempts: ${LLM_RETRY_MAX_ATTEMPTS:3}

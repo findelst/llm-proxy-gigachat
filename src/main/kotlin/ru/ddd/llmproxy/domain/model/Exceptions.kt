@@ -61,3 +61,17 @@ class InternalError(
     message = message,
     cause = cause
 )
+
+/**
+ * Exception for queue timeout errors (408 Request Timeout).
+ * Thrown when a request waits in queue longer than the configured timeout.
+ */
+class QueueTimeoutError(
+    message: String = "Request timed out waiting in queue",
+    val priority: Priority? = null,
+    val waitTimeMs: Long? = null
+) : LlmProxyException(
+    code = "queue_timeout",
+    httpStatus = 408,
+    message = message
+)

@@ -13,6 +13,7 @@ import ru.ddd.llmproxy.domain.model.*
 import ru.ddd.llmproxy.domain.service.QueueService
 import ru.ddd.llmproxy.domain.service.QueueOverflowException
 import ru.ddd.llmproxy.infrastructure.config.LlmProxyProperties
+import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
 
 private val log = KotlinLogging.logger {}
@@ -69,9 +70,13 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
         priorityChannel = PriorityChannel(properties.queue.maxLength)
         retryExecutor = RetryExecutor(properties.queue.retry, metricsPort)
 
+        // Start timeout cleanup coroutine
+        startTimeoutCleanup()
+
         log.info {
             "Initialized FIFO priority queue with max-length=${properties.queue.maxLength}, " +
-                    "retry enabled=${properties.queue.retry.enabled}"
+                    "retry enabled=${properties.queue.retry.enabled}, " +
+                    "timeout-minutes=${properties.queue.timeoutMinutes}"
         }
     }
 
@@ -226,6 +231,81 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
     private fun updateInFlight(priority: Priority, delta: Int) {
         _inFlightCounts.value = _inFlightCounts.value.toMutableMap().apply {
             this[priority] = (this[priority] ?: 0) + delta
+        }
+    }
+
+    /**
+     * Starts the periodic timeout cleanup coroutine.
+     * Removes requests that have been waiting longer than the configured timeout.
+     */
+    private fun startTimeoutCleanup() {
+        val timeoutMinutes = properties.queue.timeoutMinutes
+        val checkIntervalMs = properties.queue.timeoutCheckIntervalMs
+
+        // Skip cleanup if timeout is disabled (0)
+        if (timeoutMinutes <= 0) {
+            log.info { "Queue timeout cleanup disabled (timeout-minutes=0)" }
+            return
+        }
+
+        val maxAgeMs = timeoutMinutes * 60 * 1000
+
+        scope.launch {
+            log.info { "Started queue timeout cleanup with interval=${checkIntervalMs}ms, max-age=${maxAgeMs}ms" }
+
+            while (!isShutdown) {
+                try {
+                    delay(checkIntervalMs)
+                    cleanupExpiredRequests(maxAgeMs)
+                } catch (e: Exception) {
+                    if (!isShutdown) {
+                        log.error(e) { "Error during timeout cleanup" }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Cleans up expired requests from the queue.
+     */
+    private suspend fun cleanupExpiredRequests(maxAgeMs: Long) {
+        val now = Instant.now()
+
+        val removedCount = priorityChannel.removeExpired(
+            maxAgeMs = maxAgeMs,
+            getAgeMs = { request ->
+                val queuedAt = request.metrics.queuedAt
+                now.toEpochMilli() - queuedAt.toEpochMilli()
+            },
+            onExpired = { prioritizedItem ->
+                val request = prioritizedItem.item
+                val waitTimeMs = now.toEpochMilli() - request.metrics.queuedAt.toEpochMilli()
+
+                // Update queue length
+                updateQueueLength(request.priority, -1)
+
+                // Record metrics
+                metricsPort.recordQueueTimeout(request.priority)
+
+                // Complete the request with timeout exception
+                request.completeExceptionally(
+                    QueueTimeoutError(
+                        message = "Request timed out after waiting ${waitTimeMs / 1000} seconds in queue",
+                        priority = request.priority,
+                        waitTimeMs = waitTimeMs
+                    )
+                )
+
+                log.warn {
+                    "Request ${request.id} timed out after ${waitTimeMs}ms in queue " +
+                            "(priority=${request.priority.value})"
+                }
+            }
+        )
+
+        if (removedCount > 0) {
+            log.info { "Removed $removedCount expired requests from queue" }
         }
     }
 

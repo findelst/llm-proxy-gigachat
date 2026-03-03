@@ -55,6 +55,7 @@ class PriorityChannel<T>(
         item: T,
         priority: Int,
         sequenceNumber: Long
+
     ): ChannelResult<Unit> {
         return mutex.withLock {
             if (queue.size >= capacity) {
@@ -90,6 +91,42 @@ class PriorityChannel<T>(
      */
     fun tryReceive(): PrioritizedItem<T>? {
         return queue.poll()
+    }
+
+    /**
+     * Removes expired items from the channel.
+     *
+     * @param maxAgeMs Maximum age in milliseconds. Items older than this are expired.
+     * @param getAgeMs Function to get the age of an item in milliseconds.
+     * @param onExpired Callback invoked for each expired item.
+     * @return Number of items removed.
+     */
+    suspend fun removeExpired(
+        maxAgeMs: Long,
+        getAgeMs: (T) -> Long?,
+        onExpired: (PrioritizedItem<T>) -> Unit
+    ): Int {
+        return mutex.withLock {
+            val expiredItems = mutableListOf<PrioritizedItem<T>>()
+
+            // Find expired items
+            val iterator = queue.iterator()
+            while (iterator.hasNext()) {
+                val item = iterator.next()
+                val ageMs = getAgeMs(item.item)
+                if (ageMs != null && ageMs > maxAgeMs) {
+                    expiredItems.add(item)
+                }
+            }
+
+            // Remove expired items
+            for (item in expiredItems) {
+                queue.remove(item)
+                onExpired(item)
+            }
+
+            expiredItems.size
+        }
     }
 
     /**

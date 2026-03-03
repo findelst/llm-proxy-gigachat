@@ -43,8 +43,15 @@ data class LlmProxyProperties(
         val prioritySlots: Map<String, Int> = emptyMap(),
         val defaultPriority: String = "p1",
         val maxLength: Int = 100,
-        val retry: RetryConfig = RetryConfig()
-    )
+        val retry: RetryConfig = RetryConfig(),
+        val timeoutMinutes: Long = 10,
+        val timeoutCheckIntervalMs: Long = 60000
+    ) {
+        init {
+            require(timeoutMinutes >= 0) { "timeoutMinutes must be >= 0 (0 = disabled)" }
+            require(timeoutCheckIntervalMs > 0) { "timeoutCheckIntervalMs must be > 0" }
+        }
+    }
 
     data class CacheConfig(
         val enabled: Boolean = true,

@@ -42,6 +42,27 @@ data class ErrorResponse(
                 )
 
             /**
+             * Creates an error detail for queue timeout errors.
+             */
+            fun queueTimeout(requestId: String, priority: String? = null, waitTimeMs: Long? = null): ErrorDetail {
+                val message = buildString {
+                    append("Request timed out waiting in queue")
+                    if (waitTimeMs != null) {
+                        append(" after ${waitTimeMs / 1000} seconds")
+                    }
+                    if (priority != null) {
+                        append(" (priority=$priority)")
+                    }
+                }
+                return ErrorDetail(
+                    code = "queue_timeout",
+                    httpStatus = 408,
+                    message = message,
+                    requestId = requestId
+                )
+            }
+
+            /**
              * Creates an error detail for provider errors.
              */
             fun providerError(message: String, requestId: String, httpStatus: Int = 500): ErrorDetail =
@@ -90,6 +111,12 @@ data class ErrorResponse(
          */
         fun queueOverflow(requestId: String): ErrorResponse =
             ErrorResponse(ErrorDetail.queueOverflow(requestId))
+
+        /**
+         * Creates a queue timeout error response.
+         */
+        fun queueTimeout(requestId: String, priority: String? = null, waitTimeMs: Long? = null): ErrorResponse =
+            ErrorResponse(ErrorDetail.queueTimeout(requestId, priority, waitTimeMs))
 
         /**
          * Creates a provider error response.

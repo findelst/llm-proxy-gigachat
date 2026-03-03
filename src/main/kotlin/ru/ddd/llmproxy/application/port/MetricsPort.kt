@@ -112,4 +112,11 @@ interface MetricsPort {
      * @param errorCode The error code that caused the failure
      */
     fun recordRetryFailure(priority: Priority, errorCode: String)
+
+    /**
+     * Records a queue timeout event.
+     *
+     * @param priority The priority level of the timed out request
+     */
+    fun recordQueueTimeout(priority: Priority)
 }

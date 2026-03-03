@@ -27,6 +27,7 @@ class PrometheusMetrics(
     private val retryAttemptCounters = mutableMapOf<String, Counter>()
     private val retrySuccessCounters = mutableMapOf<String, Counter>()
     private val retryFailureCounters = mutableMapOf<String, Counter>()
+    private val timeoutCounters = mutableMapOf<String, Counter>()
 
     // Histograms for latencies
     private val queueWaitTimers = mutableMapOf<String, Timer>()
@@ -52,6 +53,7 @@ class PrometheusMetrics(
         const val RETRY_ATTEMPTS = "llm_proxy_retry_attempts_total"
         const val RETRY_SUCCESS = "llm_proxy_retry_success_total"
         const val RETRY_FAILURES = "llm_proxy_retry_failures_total"
+        const val QUEUE_TIMEOUT = "llm_proxy_queue_timeout_total"
     }
 
     override fun recordRequest(
@@ -214,5 +216,19 @@ class PrometheusMetrics(
 
         counter.increment()
         log.warn { "Recorded retry failure: priority=${priority.value}, errorCode=$errorCode" }
+    }
+
+    override fun recordQueueTimeout(priority: Priority) {
+        val key = priority.value
+
+        val counter = timeoutCounters.getOrPut(key) {
+            Counter.builder(QUEUE_TIMEOUT)
+                .description("Total number of queue timeout events")
+                .tag("priority", priority.value)
+                .register(meterRegistry)
+        }
+
+        counter.increment()
+        log.warn { "Queue timeout for priority: ${priority.value}" }
     }
 }

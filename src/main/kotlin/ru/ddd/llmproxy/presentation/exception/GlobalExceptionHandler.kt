@@ -12,6 +12,7 @@ import ru.ddd.llmproxy.domain.model.InvalidRequestError
 import ru.ddd.llmproxy.domain.model.LlmProxyException
 import ru.ddd.llmproxy.domain.model.ProviderError
 import ru.ddd.llmproxy.domain.model.QueueOverflowError
+import ru.ddd.llmproxy.domain.model.QueueTimeoutError
 import java.util.UUID
 
 private val log = KotlinLogging.logger {}
@@ -69,6 +70,24 @@ class GlobalExceptionHandler {
         return ResponseEntity
             .status(HttpStatus.TOO_MANY_REQUESTS)
             .body(ErrorResponse.queueOverflow(requestId))
+    }
+
+    /**
+     * Handles queue timeout errors.
+     */
+    @ExceptionHandler(QueueTimeoutError::class)
+    fun handleQueueTimeoutError(ex: QueueTimeoutError, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.warn { "Queue timeout (priority=${ex.priority}, waitTimeMs=${ex.waitTimeMs}, requestId=$requestId)" }
+
+        return ResponseEntity
+            .status(HttpStatus.REQUEST_TIMEOUT)
+            .body(ErrorResponse.queueTimeout(
+                requestId = requestId,
+                priority = ex.priority?.value,
+                waitTimeMs = ex.waitTimeMs
+            ))
     }
 
     /**
