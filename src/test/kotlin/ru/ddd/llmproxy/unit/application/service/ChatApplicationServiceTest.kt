@@ -16,7 +16,9 @@ import ru.ddd.llmproxy.application.port.ChatProviderPort
 import ru.ddd.llmproxy.application.port.MetricsPort
 import ru.ddd.llmproxy.domain.model.CacheKey
 import ru.ddd.llmproxy.domain.model.Priority
+import ru.ddd.llmproxy.domain.model.QueuedRequest
 import ru.ddd.llmproxy.domain.repository.CacheRepository
+import ru.ddd.llmproxy.domain.service.QueueService
 import ru.ddd.llmproxy.infrastructure.cache.CacheKeyGenerator
 import ru.ddd.llmproxy.infrastructure.config.LlmProxyProperties
 import ru.ddd.llmproxy.application.service.PriorityResolver
@@ -29,6 +31,7 @@ import ru.ddd.llmproxy.application.service.PriorityResolver
 class ChatApplicationServiceTest {
 
     private lateinit var chatProvider: ChatProviderPort<ChatRequest>
+    private lateinit var queueService: QueueService<ChatRequest, ChatResponse>
     private lateinit var cacheRepository: CacheRepository<ChatResponse>
     private lateinit var cacheKeyGenerator: CacheKeyGenerator
     private lateinit var priorityResolver: PriorityResolver
@@ -42,6 +45,7 @@ class ChatApplicationServiceTest {
     @BeforeEach
     fun setup() {
         chatProvider = mockk()
+        queueService = mockk()
         cacheRepository = mockk()
         cacheKeyGenerator = ru.ddd.llmproxy.infrastructure.cache.CacheKeyGenerator()
         priorityResolver = mockk()
@@ -50,6 +54,7 @@ class ChatApplicationServiceTest {
 
         service = ChatApplicationService(
             chatProvider = chatProvider,
+            queueService = queueService,
             cacheRepository = cacheRepository,
             cacheKeyGenerator = cacheKeyGenerator,
             priorityResolver = priorityResolver,
@@ -65,6 +70,7 @@ class ChatApplicationServiceTest {
         every { priorityResolver.resolve(any(), any()) } returns Priority.P2
         every { chatProvider.baseUrl() } returns "http://test.com"
         coEvery { chatProvider.generate(any()) } returns expectedResponse
+        coEvery { queueService.enqueue(any<QueuedRequest<ChatRequest, ChatResponse>>()) } returns expectedResponse
         every { metricsPort.incrementInFlight(any()) } just Runs
         every { metricsPort.decrementInFlight(any()) } just Runs
         every { metricsPort.recordRequest(any(), any(), any()) } just Runs
@@ -97,7 +103,7 @@ class ChatApplicationServiceTest {
         assertEquals(expectedResponse, result.response)
         assertFalse(result.cacheHit)
         assertNotNull(result.metrics)
-        coVerify(exactly = 1) { chatProvider.generate(any()) }
+        coVerify(exactly = 1) { queueService.enqueue(any<QueuedRequest<ChatRequest, ChatResponse>>()) }
     }
 
     @Test
@@ -143,9 +149,8 @@ class ChatApplicationServiceTest {
         )
 
         // Assert - metrics should have been called
-        verify(atLeast = 1) { metricsPort.incrementInFlight(any()) }
         verify(atLeast = 1) { metricsPort.recordRequest(any(), any(), "success") }
-        verify(atLeast = 1) { metricsPort.decrementInFlight(any()) }
+        verify(atLeast = 1) { metricsPort.recordQueueWait(any(), any(), any()) }
     }
 
     // Helper methods

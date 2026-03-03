@@ -8,11 +8,12 @@ import ru.ddd.llmproxy.application.port.ChatProviderPort
 import ru.ddd.llmproxy.application.port.MetricsPort
 import ru.ddd.llmproxy.domain.model.CacheKey
 import ru.ddd.llmproxy.domain.model.Priority
+import ru.ddd.llmproxy.domain.model.QueuedRequest
 import ru.ddd.llmproxy.domain.model.QueueMetrics
 import ru.ddd.llmproxy.domain.repository.CacheRepository
+import ru.ddd.llmproxy.domain.service.QueueService
 import ru.ddd.llmproxy.infrastructure.cache.CacheKeyGenerator
 import ru.ddd.llmproxy.infrastructure.config.LlmProxyProperties
-import java.util.UUID
 
 private val log = KotlinLogging.logger {}
 
@@ -28,6 +29,7 @@ private val log = KotlinLogging.logger {}
 @Service
 class ChatApplicationService(
     private val chatProvider: ChatProviderPort<ChatRequest>,
+    private val queueService: QueueService<ChatRequest, ChatResponse>,
     private val cacheRepository: CacheRepository<ChatResponse>,
     private val cacheKeyGenerator: CacheKeyGenerator,
     private val priorityResolver: PriorityResolver,
@@ -73,8 +75,39 @@ class ChatApplicationService(
             metricsPort.recordCacheMiss()
         }
 
-        // Process via queue (or directly for now)
-        val result = processWithMetrics(request, queueMetrics, endpoint, priority)
+        // Create queued request and process via priority queue
+        val queuedRequest = QueuedRequest.create<ChatRequest, ChatResponse>(
+            payload = request,
+            priority = priority,
+            endpoint = endpoint
+        )
+
+        // Track queue wait time - queueMetrics already has queuedAt from creation
+        val response = queueService.enqueue(queuedRequest)
+
+        // Calculate queue wait time from queued request metrics
+        val completedMetrics = queuedRequest.metrics.completeProcessing()
+        val resultQueueWaitMs = completedMetrics.queueWaitMs
+            ?: java.time.Duration.between(queueMetrics.queuedAt, java.time.Instant.now()).toMillis()
+
+        // Record metrics
+        metricsPort.recordRequest(endpoint, priority, "success")
+        metricsPort.recordQueueWait(endpoint, priority, resultQueueWaitMs)
+        completedMetrics.providerLatencyMs?.let {
+            metricsPort.recordProviderLatency(endpoint, priority, it)
+        }
+
+        log.info {
+            "Request $requestId completed via queue: " +
+                    "queueWait=${resultQueueWaitMs}ms, " +
+                    "providerLatency=${completedMetrics.providerLatencyMs}ms"
+        }
+
+        val result = ChatResult(
+            response = response,
+            metrics = completedMetrics,
+            cacheHit = false
+        )
 
         // Cache the result
         if (properties.cache.enabled && result.cacheHit.not()) {
@@ -84,51 +117,6 @@ class ChatApplicationService(
         }
 
         return result
-    }
-
-    /**
-     * Processes a request with metrics tracking.
-     */
-    private suspend fun processWithMetrics(
-        request: ChatRequest,
-        queueMetrics: QueueMetrics,
-        endpoint: String,
-        priority: Priority
-    ): ChatResult {
-        val startedMetrics = queueMetrics.startProcessing()
-
-        metricsPort.incrementInFlight(priority)
-
-        return try {
-            val response = chatProvider.generate(request)
-            val completedMetrics = startedMetrics.completeProcessing()
-
-            // Record metrics
-            metricsPort.recordRequest(endpoint, priority, "success")
-            completedMetrics.queueWaitMs?.let {
-                metricsPort.recordQueueWait(endpoint, priority, it)
-            }
-            completedMetrics.providerLatencyMs?.let {
-                metricsPort.recordProviderLatency(endpoint, priority, it)
-            }
-
-            log.info {
-                "Request ${queueMetrics.requestId} completed: " +
-                        "queueWait=${completedMetrics.queueWaitMs}ms, " +
-                        "providerLatency=${completedMetrics.providerLatencyMs}ms"
-            }
-
-            ChatResult(
-                response = response,
-                metrics = completedMetrics,
-                cacheHit = false
-            )
-        } catch (e: Exception) {
-            metricsPort.recordRequest(endpoint, priority, "error", e.javaClass.simpleName)
-            throw e
-        } finally {
-            metricsPort.decrementInFlight(priority)
-        }
     }
 
     /**

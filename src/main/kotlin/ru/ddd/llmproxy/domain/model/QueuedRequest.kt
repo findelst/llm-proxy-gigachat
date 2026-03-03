@@ -16,7 +16,7 @@ data class QueuedRequest<T, R>(
     val id: String = UUID.randomUUID().toString(),
     val priority: Priority,
     val payload: T,
-    val metrics: QueueMetrics,
+    var metrics: QueueMetrics,
     val deferred: CompletableDeferred<R> = CompletableDeferred()
 ) : Comparable<QueuedRequest<T, R>> {
 

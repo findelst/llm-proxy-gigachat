@@ -168,9 +168,16 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
             metricsPort.setInFlight(priority, inFlight(priority))
             metricsPort.setQueueLength(priority, queueLength(priority))
 
+            // Mark processing start for queue wait time calculation
+            request.metrics = request.metrics.startProcessing()
+
             log.debug { "Processing request ${request.id} with priority $priority" }
 
             val result = processor(request.payload)
+
+            // Mark processing complete for latency calculation
+            request.metrics = request.metrics.completeProcessing()
+
             request.complete(result)
         } catch (e: Exception) {
             request.completeExceptionally(e)
