@@ -36,7 +36,6 @@ llm:
       top-p: ${LLM_TOP_P:1.0}
       max-tokens: ${LLM_MAX_TOKENS:50000}
     queue:
-      # priority-slots is DEPRECATED - per-priority concurrency limits have been removed
       # The queue now uses strict FIFO ordering within each priority level
       default-priority: ${LLM_PRIORITY_DEFAULT:p2}
       max-length: ${LLM_QUEUE_MAX_LEN:100}

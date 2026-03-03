@@ -26,10 +26,10 @@ tests/
 Kotlin 2.x (JVM 21): Follow standard conventions
 
 ## Recent Changes
+- 006-queue-timeout: Added Kotlin 2.x (JVM 21) + Spring Boot 3.x, Kotlinx Coroutines
 - 005-fifo-priority-queue: Added Kotlin 2.x (JVM 21) + Spring Boot 3.x, Kotlinx Coroutines, langchain4j-gigachat 0.1.17
 - 004-queue-integration: Added Kotlin 2.x (JVM 21) + Spring Boot 3.x, langchain4j-gigachat 0.1.17, gigachat-java 0.1.13, Caffeine 3.x, Kotlinx Coroutines
 
-- 003-gigachat-compat: Added Kotlin 2.x (JVM 21) + Spring Boot 3.x, langchain4j-gigachat 0.1.17, gigachat-java 0.1.13, Caffeine 3.x
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->

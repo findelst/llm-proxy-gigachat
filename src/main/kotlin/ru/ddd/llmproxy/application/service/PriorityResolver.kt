@@ -52,26 +52,4 @@ class PriorityResolver(
     fun getDefaultPriority(): Priority {
         return Priority.resolve(properties.queue.defaultPriority)
     }
-
-    /**
-     * Returns the highest configured priority.
-     */
-    fun getHighestPriority(): Priority {
-        val slots = properties.queue.prioritySlots
-        return slots.entries
-            .minByOrNull { Priority.resolve(it.key).level }
-            ?.let { Priority.resolve(it.key) }
-            ?: Priority.P1
-    }
-
-    /**
-     * Returns the lowest configured priority.
-     */
-    fun getLowestPriority(): Priority {
-        val slots = properties.queue.prioritySlots
-        return slots.entries
-            .maxByOrNull { Priority.resolve(it.key).level }
-            ?.let { Priority.resolve(it.key) }
-            ?: Priority.P3
-    }
 }

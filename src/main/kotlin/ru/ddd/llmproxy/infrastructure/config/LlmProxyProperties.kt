@@ -36,11 +36,6 @@ data class LlmProxyProperties(
     }
 
     data class QueueConfig(
-        @Deprecated(
-            message = "priority-slots is deprecated. Per-priority concurrency limits have been removed. " +
-                    "The queue now uses strict FIFO ordering within each priority level. This configuration is ignored."
-        )
-        val prioritySlots: Map<String, Int> = emptyMap(),
         val defaultPriority: String = "p1",
         val maxLength: Int = 100,
         val retry: RetryConfig = RetryConfig(),

@@ -57,16 +57,6 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
     private var isShutdown = false
 
     init {
-        // Log warning if deprecated priority-slots configuration is present
-        val prioritySlots = properties.queue.prioritySlots
-        if (prioritySlots.isNotEmpty()) {
-            log.warn {
-                "Configuration 'priority-slots' is deprecated and will be ignored. " +
-                        "Per-priority concurrency limits have been removed. " +
-                        "Queue now uses strict FIFO ordering within each priority level."
-            }
-        }
-
         priorityChannel = PriorityChannel(properties.queue.maxLength)
         retryExecutor = RetryExecutor(properties.queue.retry, metricsPort)
 
