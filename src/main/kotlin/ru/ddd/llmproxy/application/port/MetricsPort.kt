@@ -89,4 +89,27 @@ interface MetricsPort {
      * Records a cache miss.
      */
     fun recordCacheMiss()
+
+    /**
+     * Records a retry attempt.
+     *
+     * @param priority The priority level of the request being retried
+     * @param attemptNumber The retry attempt number (1 = first retry)
+     */
+    fun recordRetryAttempt(priority: Priority, attemptNumber: Int)
+
+    /**
+     * Records a successful retry (operation succeeded after at least one retry).
+     *
+     * @param totalAttempts Total number of attempts including initial
+     */
+    fun recordRetrySuccess(totalAttempts: Int)
+
+    /**
+     * Records a retry failure (all retry attempts exhausted).
+     *
+     * @param priority The priority level of the failed request
+     * @param errorCode The error code that caused the failure
+     */
+    fun recordRetryFailure(priority: Priority, errorCode: String)
 }

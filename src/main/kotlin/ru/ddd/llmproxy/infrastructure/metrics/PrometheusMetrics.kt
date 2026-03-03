@@ -24,6 +24,9 @@ class PrometheusMetrics(
     // Counters
     private val requestCounters = mutableMapOf<String, Counter>()
     private val overflowCounters = mutableMapOf<String, Counter>()
+    private val retryAttemptCounters = mutableMapOf<String, Counter>()
+    private val retrySuccessCounters = mutableMapOf<String, Counter>()
+    private val retryFailureCounters = mutableMapOf<String, Counter>()
 
     // Histograms for latencies
     private val queueWaitTimers = mutableMapOf<String, Timer>()
@@ -46,6 +49,9 @@ class PrometheusMetrics(
         const val IN_FLIGHT = "llm_proxy_in_flight"
         const val CACHE_HITS = "llm_proxy_cache_hits_total"
         const val CACHE_MISSES = "llm_proxy_cache_misses_total"
+        const val RETRY_ATTEMPTS = "llm_proxy_retry_attempts_total"
+        const val RETRY_SUCCESS = "llm_proxy_retry_success_total"
+        const val RETRY_FAILURES = "llm_proxy_retry_failures_total"
     }
 
     override fun recordRequest(
@@ -164,5 +170,49 @@ class PrometheusMetrics(
             .description("Total number of cache misses")
             .register(meterRegistry)
             .increment()
+    }
+
+    override fun recordRetryAttempt(priority: Priority, attemptNumber: Int) {
+        val key = "${priority.value}:$attemptNumber"
+
+        val counter = retryAttemptCounters.getOrPut(key) {
+            Counter.builder(RETRY_ATTEMPTS)
+                .description("Total number of retry attempts")
+                .tag("priority", priority.value)
+                .tag("attempt", attemptNumber.toString())
+                .register(meterRegistry)
+        }
+
+        counter.increment()
+        log.trace { "Recorded retry attempt: priority=${priority.value}, attempt=$attemptNumber" }
+    }
+
+    override fun recordRetrySuccess(totalAttempts: Int) {
+        val key = totalAttempts.toString()
+
+        val counter = retrySuccessCounters.getOrPut(key) {
+            Counter.builder(RETRY_SUCCESS)
+                .description("Total number of successful retries")
+                .tag("total_attempts", totalAttempts.toString())
+                .register(meterRegistry)
+        }
+
+        counter.increment()
+        log.debug { "Recorded retry success after $totalAttempts attempts" }
+    }
+
+    override fun recordRetryFailure(priority: Priority, errorCode: String) {
+        val key = "${priority.value}:$errorCode"
+
+        val counter = retryFailureCounters.getOrPut(key) {
+            Counter.builder(RETRY_FAILURES)
+                .description("Total number of retry failures (all attempts exhausted)")
+                .tag("priority", priority.value)
+                .tag("error_code", errorCode)
+                .register(meterRegistry)
+        }
+
+        counter.increment()
+        log.warn { "Recorded retry failure: priority=${priority.value}, errorCode=$errorCode" }
     }
 }

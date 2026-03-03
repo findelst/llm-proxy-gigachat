@@ -11,7 +11,9 @@ data class QueueMetrics(
     val endpoint: String,
     val queuedAt: Instant = Instant.now(),
     val startedAt: Instant? = null,
-    val completedAt: Instant? = null
+    val completedAt: Instant? = null,
+    val retryAttempts: Int = 0,
+    val lastRetryAt: Instant? = null
 ) {
     /**
      * Time spent waiting in queue in milliseconds.
@@ -42,6 +44,14 @@ data class QueueMetrics(
      * Creates a new instance with processing completed timestamp.
      */
     fun completeProcessing(): QueueMetrics = copy(completedAt = Instant.now())
+
+    /**
+     * Creates a new instance with an additional retry attempt recorded.
+     */
+    fun recordRetry(): QueueMetrics = copy(
+        retryAttempts = retryAttempts + 1,
+        lastRetryAt = Instant.now()
+    )
 
     companion object {
         /**
