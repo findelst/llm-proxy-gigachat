@@ -75,3 +75,33 @@ class QueueTimeoutError(
     httpStatus = 408,
     message = message
 )
+
+/**
+ * Exception for preemption errors (503 Service Unavailable).
+ * Thrown when a request is preempted by a higher priority request.
+ */
+class PreemptionError(
+    message: String = "Request was preempted by higher priority",
+    val priority: Priority,
+    val preemptedBy: Priority,
+    val elapsedMs: Long,
+    val queuePosition: Int? = null
+) : LlmProxyException(
+    code = "request_preempted",
+    httpStatus = 503,
+    message = message
+)
+
+/**
+ * Exception for P3 throttling (429 Too Many Requests).
+ * Thrown when P3 request is blocked due to max concurrent limit.
+ */
+class P3ThrottledError(
+    message: String = "Low priority requests are limited to 1 concurrent execution",
+    val queuePosition: Int,
+    val estimatedWaitSeconds: Long
+) : LlmProxyException(
+    code = "p3_throttled",
+    httpStatus = 429,
+    message = message
+)

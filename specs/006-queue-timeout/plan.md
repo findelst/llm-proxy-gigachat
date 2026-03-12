@@ -1,162 +1,104 @@
-# Implementation Plan: Queue Timeout & Cleanup
+# Implementation Plan: [FEATURE]
 
-**Branch**: `006-queue-timeout` | **Date**: 2026-03-03 | **Spec**: [spec.md](./spec.md)
-**Input**: Feature specification from `/specs/006-queue-timeout/spec.md`
+**Branch**: `[###-feature-name]` | **Date**: [DATE] | **Spec**: [link]
+**Input**: Feature specification from `/specs/[###-feature-name]/spec.md`
+
+**Note**: This template is filled in by the `/speckit.plan` command. See `.specify/templates/plan-template.md` for the execution workflow.
 
 ## Summary
 
-Добавить механизм timeout для запросов в очереди. Если запрос ждёт дольше настроенного времени (по умолчанию 10 минут), он должен быть удалён из очереди и клиенту возвращена понятная ошибка timeout. Реализация использует периодическую проверку (каждую минуту) в отдельной корутине.
+[Extract from feature spec: primary requirement + technical approach from research]
 
 ## Technical Context
 
-**Language/Version**: Kotlin 2.x (JVM 21)
-**Primary Dependencies**: Spring Boot 3.x, Kotlinx Coroutines
-**Storage**: N/A (in-memory queue)
-**Testing**: JUnit 5, Kotest assertions, kotlinx-coroutines-test
-**Target Platform**: Linux server (JVM)
-**Project Type**: web-service (API proxy)
-**Performance Goals**: Timeout check within 1 minute of expiration
-**Constraints**: Minimal overhead on queue operations
-**Scale/Scope**: 100 concurrent requests max queue length
+<!--
+  ACTION REQUIRED: Replace the content in this section with the technical details
+  for the project. The structure here is presented in advisory capacity to guide
+  the iteration process.
+-->
+
+**Language/Version**: [e.g., Python 3.11, Swift 5.9, Rust 1.75 or NEEDS CLARIFICATION]  
+**Primary Dependencies**: [e.g., FastAPI, UIKit, LLVM or NEEDS CLARIFICATION]  
+**Storage**: [if applicable, e.g., PostgreSQL, CoreData, files or N/A]  
+**Testing**: [e.g., pytest, XCTest, cargo test or NEEDS CLARIFICATION]  
+**Target Platform**: [e.g., Linux server, iOS 15+, WASM or NEEDS CLARIFICATION]
+**Project Type**: [e.g., library/cli/web-service/mobile-app/compiler/desktop-app or NEEDS CLARIFICATION]  
+**Performance Goals**: [domain-specific, e.g., 1000 req/s, 10k lines/sec, 60 fps or NEEDS CLARIFICATION]  
+**Constraints**: [domain-specific, e.g., <200ms p95, <100MB memory, offline-capable or NEEDS CLARIFICATION]  
+**Scale/Scope**: [domain-specific, e.g., 10k users, 1M LOC, 50 screens or NEEDS CLARIFICATION]
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-| Principle | Status | Notes |
-|-----------|--------|-------|
-| I. DDD & Clean Architecture | ✅ PASS | Timeout logic in infrastructure layer, new exception in domain |
-| II. Technology Stack Discipline | ✅ PASS | Kotlin, Spring Boot, Coroutines - all compliant |
-| III. Testing Standards | ✅ PASS | JUnit 5 + Kotest, new tests required |
-| IV. Concurrency Model | ✅ PASS | Uses coroutine for periodic cleanup |
-| V. Caching Strategy | ✅ PASS | No caching changes |
-
-**Gate Status**: ✅ PASS - No violations
+[Gates determined based on constitution file]
 
 ## Project Structure
 
 ### Documentation (this feature)
 
 ```text
-specs/006-queue-timeout/
-├── spec.md              # Feature specification
-├── plan.md              # This file
-├── research.md          # Phase 0 output
-├── data-model.md        # Phase 1 output
-├── quickstart.md        # Phase 1 output
-├── checklists/
-│   └── requirements.md  # Spec quality checklist
-└── tasks.md             # Phase 2 output (/speckit.tasks)
+specs/[###-feature]/
+├── plan.md              # This file (/speckit.plan command output)
+├── research.md          # Phase 0 output (/speckit.plan command)
+├── data-model.md        # Phase 1 output (/speckit.plan command)
+├── quickstart.md        # Phase 1 output (/speckit.plan command)
+├── contracts/           # Phase 1 output (/speckit.plan command)
+└── tasks.md             # Phase 2 output (/speckit.tasks command - NOT created by /speckit.plan)
 ```
 
 ### Source Code (repository root)
+<!--
+  ACTION REQUIRED: Replace the placeholder tree below with the concrete layout
+  for this feature. Delete unused options and expand the chosen structure with
+  real paths (e.g., apps/admin, packages/something). The delivered plan must
+  not include Option labels.
+-->
 
 ```text
-src/main/kotlin/ru/ddd/llmproxy/
-├── domain/
-│   ├── model/
-│   │   ├── Exceptions.kt          # ADD: QueueTimeoutException
-│   │   ├── QueuedRequest.kt       # Unchanged (already has queuedAt via QueueMetrics)
-│   │   └── QueueMetrics.kt        # Already has queuedAt
-│   └── service/
-│       └── QueueService.kt        # Unchanged
-├── application/
-│   └── port/
-│       └── MetricsPort.kt         # ADD: recordQueueTimeout method
-├── infrastructure/
-│   ├── config/
-│   │   └── LlmProxyProperties.kt  # ADD: timeout config in QueueConfig
-│   ├── queue/
-│   │   ├── CoroutinePriorityQueue.kt  # ADD: timeout cleanup coroutine
-│   │   └── PriorityChannel.kt         # ADD: removeExpired method
-│   └── metrics/
-│       └── PrometheusMetrics.kt   # ADD: queue_timeout_total counter
-└── presentation/
-    └── exception/
-        └── GlobalExceptionHandler.kt  # ADD: handle QueueTimeoutException
+# [REMOVE IF UNUSED] Option 1: Single project (DEFAULT)
+src/
+├── models/
+├── services/
+├── cli/
+└── lib/
 
-src/test/kotlin/ru/ddd/llmproxy/
+tests/
+├── contract/
+├── integration/
 └── unit/
-    └── infrastructure/queue/
-        └── QueueTimeoutTest.kt    # NEW: timeout tests
+
+# [REMOVE IF UNUSED] Option 2: Web application (when "frontend" + "backend" detected)
+backend/
+├── src/
+│   ├── models/
+│   ├── services/
+│   └── api/
+└── tests/
+
+frontend/
+├── src/
+│   ├── components/
+│   ├── pages/
+│   └── services/
+└── tests/
+
+# [REMOVE IF UNUSED] Option 3: Mobile + API (when "iOS/Android" detected)
+api/
+└── [same as backend above]
+
+ios/ or android/
+└── [platform-specific structure: feature modules, UI flows, platform tests]
 ```
 
-**Structure Decision**: Single project structure maintained. Changes in infrastructure/queue layer.
+**Structure Decision**: [Document the selected structure and reference the real
+directories captured above]
 
 ## Complexity Tracking
 
-> No violations to justify - gate passed cleanly.
+> **Fill ONLY if Constitution Check has violations that must be justified**
 
-## Implementation Tasks Summary
-
-### Task 1: Add Timeout Configuration
-
-**File**: `infrastructure/config/LlmProxyProperties.kt`
-
-Add to QueueConfig:
-- `timeoutMinutes: Long = 10` (default 10 minutes)
-- `timeoutCheckIntervalMs: Long = 60000` (default 1 minute check)
-
-### Task 2: Add QueueTimeoutException
-
-**File**: `domain/model/Exceptions.kt`
-
-Add new exception class distinct from QueueOverflowException.
-
-### Task 3: Add Timeout Metrics
-
-**File**: `application/port/MetricsPort.kt`
-
-Add method:
-- `recordQueueTimeout(priority: Priority)`
-
-**File**: `infrastructure/metrics/PrometheusMetrics.kt`
-
-Implement counter:
-- `llm_proxy_queue_timeout_total` with priority tag
-
-### Task 4: Implement Timeout Cleanup in PriorityChannel
-
-**File**: `infrastructure/queue/PriorityChannel.kt`
-
-Add method:
-- `removeExpired(maxAgeMs: Long): List<PrioritizedItem<T>>`
-
-### Task 5: Add Timeout Cleanup Coroutine
-
-**File**: `infrastructure/queue/CoroutinePriorityQueue.kt`
-
-Add:
-- `startTimeoutCleanup()` method
-- Periodic coroutine that checks for expired requests
-- Complete expired requests with QueueTimeoutException
-
-### Task 6: Add GlobalExceptionHandler
-
-**File**: `presentation/exception/GlobalExceptionHandler.kt`
-
-Handle QueueTimeoutException:
-- Return 503 Service Unavailable with clear message
-- Differentiate from 429 Too Many Requests (overflow)
-
-### Task 7: Update application.yml
-
-**File**: `src/main/resources/application.yml`
-
-Add timeout configuration:
-```yaml
-llm:
-  proxy:
-    queue:
-      timeout-minutes: ${LLM_QUEUE_TIMEOUT_MINUTES:10}
-      timeout-check-interval-ms: ${LLM_QUEUE_TIMEOUT_CHECK_MS:60000}
-```
-
-## Phase Outputs
-
-| Phase | Output | Status |
-|-------|--------|--------|
-| Phase 0 | research.md | ⏳ Pending |
-| Phase 1 | data-model.md | ⏳ Pending |
-| Phase 1 | quickstart.md | ⏳ Pending |
-| Phase 2 | tasks.md | ⏳ Pending (/speckit.tasks) |
+| Violation | Why Needed | Simpler Alternative Rejected Because |
+|-----------|------------|-------------------------------------|
+| [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
+| [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |

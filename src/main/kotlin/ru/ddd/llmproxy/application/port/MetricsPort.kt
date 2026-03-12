@@ -119,4 +119,32 @@ interface MetricsPort {
      * @param priority The priority level of the timed out request
      */
     fun recordQueueTimeout(priority: Priority)
+
+    /**
+     * Records a preemption event.
+     *
+     * @param preemptedPriority The priority that was preempted
+     * @param preemptedByPriority The priority that caused the preemption
+     */
+    fun recordPreemption(preemptedPriority: Priority, preemptedByPriority: Priority)
+
+    /**
+     * Records a P3 throttling event (P3 request blocked due to max 1 concurrent).
+     */
+    fun recordP3Throttled()
+
+    /**
+     * Updates the current concurrent requests gauge.
+     *
+     * @param priority The priority level
+     * @param count Current concurrent request count for this priority
+     */
+    fun setConcurrentRequests(priority: Priority, count: Int)
+
+    /**
+     * Records the number of available slots.
+     *
+     * @param available Number of available slots
+     */
+    fun setAvailableSlots(available: Int)
 }

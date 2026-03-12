@@ -28,6 +28,10 @@ class PrometheusMetrics(
     private val retrySuccessCounters = mutableMapOf<String, Counter>()
     private val retryFailureCounters = mutableMapOf<String, Counter>()
     private val timeoutCounters = mutableMapOf<String, Counter>()
+    private val preemptionCounters = mutableMapOf<String, Counter>()
+    private val p3ThrottledCounter = mutableMapOf<String, Counter>()
+    private val concurrentRequestsGauges = mutableMapOf<String, Number>()
+    private var availableSlotsGauge: Number = 0
 
     // Histograms for latencies
     private val queueWaitTimers = mutableMapOf<String, Timer>()
@@ -54,6 +58,10 @@ class PrometheusMetrics(
         const val RETRY_SUCCESS = "llm_proxy_retry_success_total"
         const val RETRY_FAILURES = "llm_proxy_retry_failures_total"
         const val QUEUE_TIMEOUT = "llm_proxy_queue_timeout_total"
+        const val PREEMPTION_TOTAL = "llm_proxy_preemption_total"
+        const val P3_THROTTLED = "llm_proxy_p3_throttled_total"
+        const val CONCURRENT_REQUESTS = "llm_proxy_concurrent_requests"
+        const val AVAILABLE_SLOTS = "llm_proxy_available_slots"
     }
 
     override fun recordRequest(
@@ -230,5 +238,52 @@ class PrometheusMetrics(
 
         counter.increment()
         log.warn { "Queue timeout for priority: ${priority.value}" }
+    }
+
+    override fun recordPreemption(preemptedPriority: Priority, preemptedByPriority: Priority) {
+        val key = "${preemptedPriority.value}:${preemptedByPriority.value}"
+
+        val counter = preemptionCounters.getOrPut(key) {
+            Counter.builder(PREEMPTION_TOTAL)
+                .description("Total number of preemption events")
+                .tag("preempted_priority", preemptedPriority.value)
+                .tag("preempted_by", preemptedByPriority.value)
+                .register(meterRegistry)
+        }
+
+        counter.increment()
+        log.info {
+            "Recorded preemption: ${preemptedPriority.value} preempted by ${preemptedByPriority.value}"
+        }
+    }
+
+    override fun recordP3Throttled() {
+        val key = "p3"
+        val counter = p3ThrottledCounter.getOrPut(key) {
+            Counter.builder(P3_THROTTLED)
+                .description("Total number of P3 throttling events")
+                .tag("priority", "p3")
+                .register(meterRegistry)
+        }
+
+        counter.increment()
+        log.debug { "Recorded P3 throttling event" }
+    }
+
+    override fun setConcurrentRequests(priority: Priority, count: Int) {
+        val key = priority.value
+        concurrentRequestsGauges[key] = count
+
+        Gauge.builder(CONCURRENT_REQUESTS) { concurrentRequestsGauges[key]?.toDouble() ?: 0.0 }
+            .description("Current concurrent requests by priority")
+            .tag("priority", priority.value)
+            .register(meterRegistry)
+    }
+
+    override fun setAvailableSlots(available: Int) {
+        availableSlotsGauge = available
+        Gauge.builder(AVAILABLE_SLOTS) { availableSlotsGauge.toDouble() }
+            .description("Number of available execution slots")
+            .register(meterRegistry)
     }
 }

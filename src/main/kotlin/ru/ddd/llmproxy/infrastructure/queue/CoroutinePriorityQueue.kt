@@ -2,6 +2,7 @@ package ru.ddd.llmproxy.infrastructure.queue
 
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.*
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,7 +33,8 @@ private val log = KotlinLogging.logger {}
 class CoroutinePriorityQueue<T : Any, R : Any>(
     private val properties: LlmProxyProperties,
     private val metricsPort: MetricsPort,
-    @Qualifier("ioDispatcher") private val dispatcher: CoroutineDispatcher
+    @Qualifier("ioDispatcher") private val dispatcher: CoroutineDispatcher,
+    private val concurrencyController: ConcurrencyController
 ) : QueueService<T, R> {
 
     private val scope = CoroutineScope(dispatcher + SupervisorJob())
@@ -160,7 +162,7 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
     }
 
     /**
-     * Processes a single request with retry support.
+     * Processes a single request with retry support and concurrency control.
      */
     private suspend fun processRequest(
         request: QueuedRequest<T, R>,
@@ -168,6 +170,68 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
         priority: Priority
     ) {
         updateQueueLength(priority, -1)
+
+        // Try to acquire a slot from ConcurrencyController
+        val job = coroutineContext.job
+        val acquired = concurrencyController.tryAcquire(
+            requestId = request.id,
+            priority = priority,
+            job = job,
+            queuedAt = request.metrics.queuedAt
+        )
+
+        if (!acquired) {
+            // Handle based on priority
+            when (priority) {
+                Priority.P1 -> {
+                    // P1 should preempt if needed
+                    if (properties.queue.preemptionEnabled) {
+                        val slotsNeeded = minOf(
+                            properties.queue.p1MaxThreads,
+                            properties.queue.maxConcurrent - concurrencyController.stats.totalRunning
+                        ).coerceAtLeast(1)
+
+                        val preempted = concurrencyController.preemptSlots(priority, slotsNeeded)
+                        if (preempted.isNotEmpty()) {
+                            log.info { "Preempted ${preempted.size} requests for P1" }
+                        }
+
+                        // Try again after preemption
+                        if (!concurrencyController.tryAcquire(request.id, priority, job, request.metrics.queuedAt)) {
+                            request.completeExceptionally(
+                                QueueOverflowError("Queue is full. Try again later.", priority)
+                            )
+                            return
+                        }
+                    } else {
+                        request.completeExceptionally(
+                            QueueOverflowError("Queue is full. Try again later.", priority)
+                        )
+                        return
+                    }
+                }
+                Priority.P3 -> {
+                    // P3 is throttled
+                    metricsPort.recordP3Throttled()
+                    request.completeExceptionally(
+                        P3ThrottledError(
+                            message = "Low priority requests are limited to 1 concurrent execution",
+                            queuePosition = queueLength(priority),
+                            estimatedWaitSeconds = 30
+                        )
+                    )
+                    return
+                }
+                Priority.P2 -> {
+                    // P2 should always be able to acquire if within global limits
+                    request.completeExceptionally(
+                        QueueOverflowError("Queue is full. Try again later.", priority)
+                    )
+                    return
+                }
+            }
+        }
+
         updateInFlight(priority, 1)
         metricsPort.setInFlight(priority, inFlight(priority))
         metricsPort.setQueueLength(priority, queueLength(priority))
@@ -202,10 +266,24 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
             request.metrics = request.metrics.completeProcessing()
 
             request.complete(result)
+        } catch (e: CancellationException) {
+            // Request was preempted
+            log.info { "Request ${request.id} was preempted: ${e.message}" }
+            request.completeExceptionally(
+                PreemptionError(
+                    priority = priority,
+                    preemptedBy = Priority.P1,
+                    elapsedMs = java.time.Duration.between(
+                        request.metrics.startedAt ?: Instant.now(),
+                        Instant.now()
+                    ).toMillis()
+                )
+            )
         } catch (e: Exception) {
             request.completeExceptionally(e)
             log.error(e) { "Error processing request ${request.id}" }
         } finally {
+            concurrencyController.release(request.id)
             updateInFlight(priority, -1)
             metricsPort.setInFlight(priority, inFlight(priority))
         }

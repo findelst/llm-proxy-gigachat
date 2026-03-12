@@ -40,11 +40,19 @@ data class LlmProxyProperties(
         val maxLength: Int = 100,
         val retry: RetryConfig = RetryConfig(),
         val timeoutMinutes: Long = 10,
-        val timeoutCheckIntervalMs: Long = 60000
+        val timeoutCheckIntervalMs: Long = 60000,
+        // Concurrency control settings
+        val maxConcurrent: Int = 3,
+        val p1MaxThreads: Int = 2,
+        val p3MaxThreads: Int = 1,
+        val preemptionEnabled: Boolean = true
     ) {
         init {
             require(timeoutMinutes >= 0) { "timeoutMinutes must be >= 0 (0 = disabled)" }
             require(timeoutCheckIntervalMs > 0) { "timeoutCheckIntervalMs must be > 0" }
+            require(maxConcurrent > 0) { "maxConcurrent must be > 0" }
+            require(p1MaxThreads in 1..maxConcurrent) { "p1MaxThreads must be in 1..maxConcurrent" }
+            require(p3MaxThreads in 1..maxConcurrent) { "p3MaxThreads must be in 1..maxConcurrent" }
         }
     }
 

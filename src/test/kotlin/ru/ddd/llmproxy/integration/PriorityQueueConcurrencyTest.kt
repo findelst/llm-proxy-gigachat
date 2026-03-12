@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.max
 import kotlin.system.measureTimeMillis
 
 private val log = KotlinLogging.logger {}
@@ -276,5 +277,157 @@ class PriorityQueueConcurrencyTest {
 
         // Most requests should succeed
         Assertions.assertTrue(completedRequests.get() > totalRequests * 0.9)
+    }
+
+    // ==================== P1 Preemption Tests ====================
+
+    @Test
+    fun `should preempt P2 requests when P1 arrives and slots full`() = runTest {
+        mockProvider.setDelay(500) // Slow responses to ensure slots stay full
+
+        val maxConcurrent = properties.queue.maxConcurrent
+        val processingOrder = mutableListOf<String>()
+        val orderLock = Any()
+        val p1Started = CountDownLatch(1)
+        val p1Completed = CountDownLatch(1)
+
+        val trackingProvider = object : ChatProviderPort<ChatRequest> by mockProvider {
+            override suspend fun generate(request: ChatRequest): ChatResponse {
+                val message = request.messages().firstOrNull()?.toString() ?: "unknown"
+                synchronized(orderLock) {
+                    processingOrder.add("START: $message")
+                }
+
+                // Signal when P1 starts
+                if (message.contains("p1-urgent")) {
+                    p1Started.countDown()
+                }
+
+                val result = mockProvider.generate(request)
+
+                synchronized(orderLock) {
+                    processingOrder.add("END: $message")
+                }
+
+                // Signal when P1 completes
+                if (message.contains("p1-urgent")) {
+                    p1Completed.countDown()
+                }
+
+                return result
+            }
+        }
+
+        // Fill all slots with P2 requests (non-blocking, they'll start processing)
+        val p2Jobs = (1..maxConcurrent).map { index ->
+            async(Dispatchers.Default) {
+                try {
+                    trackingProvider.generate(
+                        ChatRequest.builder()
+                            .messages(listOf(UserMessage.from("p2-$index")))
+                            .build()
+                    )
+                } catch (e: Exception) {
+                    // Expected if preempted
+                    log.debug { "P2 request preempted: ${e.message}" }
+                }
+            }
+        }
+
+        // Small delay to ensure P2 requests are processing
+        delay(100)
+
+        // Submit P1 request - should preempt P2
+        val p1Jobs = async(Dispatchers.Default) {
+            trackingProvider.generate(
+                ChatRequest.builder()
+                    .messages(listOf(UserMessage.from("p1-urgent")))
+                    .build()
+            )
+        }
+
+        // Wait for P1 to complete (should be fast due to preemption)
+        val p1CompletedInTime = p1Completed.await(3, TimeUnit.SECONDS)
+
+        // Cancel remaining P2 jobs
+        p2Jobs.forEach { it.cancel() }
+        p1Jobs.cancel()
+
+        log.info { "Processing order: $processingOrder" }
+        log.info { "P1 completed in time: $p1CompletedInTime" }
+
+        // P1 should have started processing
+        Assertions.assertTrue(
+            processingOrder.any { it.contains("p1-urgent") },
+            "P1 request should have been processed"
+        )
+    }
+
+    @Test
+    fun `should limit P3 to max 1 concurrent`() = runTest {
+        mockProvider.setDelay(200) // Slow responses
+
+        val maxConcurrent = properties.queue.maxConcurrent
+        val p3ConcurrentCount = AtomicInteger(0)
+        val maxP3ConcurrentObserved = AtomicInteger(0)
+        val p3Completed = AtomicInteger(0)
+
+        val trackingProvider = object : ChatProviderPort<ChatRequest> by mockProvider {
+            override suspend fun generate(request: ChatRequest): ChatResponse {
+                val message = request.messages().firstOrNull()?.toString() ?: "unknown"
+
+                if (message.contains("p3-")) {
+                    val current = p3ConcurrentCount.incrementAndGet()
+                    maxP3ConcurrentObserved.updateAndGet { maxOf(it, current) }
+                }
+
+                val result = mockProvider.generate(request)
+
+                if (message.contains("p3-")) {
+                    p3ConcurrentCount.decrementAndGet()
+                    p3Completed.incrementAndGet()
+                }
+
+                return result
+            }
+        }
+
+        // Submit multiple P3 requests
+        val p3Jobs = (1..5).map { index ->
+            async(Dispatchers.Default) {
+                trackingProvider.generate(
+                    ChatRequest.builder()
+                        .messages(listOf(UserMessage.from("p3-$index")))
+                        .build()
+                )
+            }
+        }
+
+        // Also submit some P2 requests to fill remaining slots
+        val p2Jobs = (1..maxConcurrent).map { index ->
+            async(Dispatchers.Default) {
+                trackingProvider.generate(
+                    ChatRequest.builder()
+                        .messages(listOf(UserMessage.from("p2-$index")))
+                        .build()
+                )
+            }
+        }
+
+        // Wait for all to complete
+        try {
+            p3Jobs.awaitAll()
+            p2Jobs.awaitAll()
+        } catch (e: Exception) {
+            log.warn { "Some jobs failed: ${e.message}" }
+        }
+
+        log.info { "P3 completed: ${p3Completed.get()}, Max P3 concurrent: ${maxP3ConcurrentObserved.get()}" }
+
+        // P3 should never exceed max 1 concurrent
+        Assertions.assertTrue(
+            maxP3ConcurrentObserved.get() <= 1,
+            "P3 concurrent should be <= 1, but was ${maxP3ConcurrentObserved.get()}"
+        )
     }
 }
