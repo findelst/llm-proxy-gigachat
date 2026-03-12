@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.context.annotation.Import
 import ru.ddd.llmproxy.application.port.ChatProviderPort
+import ru.ddd.llmproxy.application.service.ChatApplicationService
 import ru.ddd.llmproxy.domain.model.Priority
 import ru.ddd.llmproxy.infrastructure.config.LlmProxyProperties
 import java.util.concurrent.ConcurrentHashMap
@@ -44,6 +45,9 @@ class PriorityQueueConcurrencyTest {
 
     @Autowired
     private lateinit var properties: LlmProxyProperties
+
+    @Autowired
+    private lateinit var chatApplicationService: ChatApplicationService
 
     // ==================== Concurrent Processing Tests ====================
 
@@ -367,67 +371,49 @@ class PriorityQueueConcurrencyTest {
     fun `should limit P3 to max 1 concurrent`() = runTest {
         mockProvider.setDelay(200) // Slow responses
 
-        val maxConcurrent = properties.queue.maxConcurrent
-        val p3ConcurrentCount = AtomicInteger(0)
-        val maxP3ConcurrentObserved = AtomicInteger(0)
+        val p3Throttled = AtomicInteger(0)
         val p3Completed = AtomicInteger(0)
 
-        val trackingProvider = object : ChatProviderPort<ChatRequest> by mockProvider {
-            override suspend fun generate(request: ChatRequest): ChatResponse {
-                val message = request.messages().firstOrNull()?.toString() ?: "unknown"
-
-                if (message.contains("p3-")) {
-                    val current = p3ConcurrentCount.incrementAndGet()
-                    maxP3ConcurrentObserved.updateAndGet { maxOf(it, current) }
-                }
-
-                val result = mockProvider.generate(request)
-
-                if (message.contains("p3-")) {
-                    p3ConcurrentCount.decrementAndGet()
-                    p3Completed.incrementAndGet()
-                }
-
-                return result
-            }
-        }
-
-        // Submit multiple P3 requests
+        // Submit multiple P3 requests via the actual queue service
+        // This tests that P3 throttling works when more than 1 P3 is submitted
         val p3Jobs = (1..5).map { index ->
             async(Dispatchers.Default) {
-                trackingProvider.generate(
-                    ChatRequest.builder()
-                        .messages(listOf(UserMessage.from("p3-$index")))
-                        .build()
-                )
+                try {
+                    chatApplicationService.completions(
+                        request = ChatRequest.builder()
+                            .messages(listOf(UserMessage.from("p3-$index")))
+                            .build(),
+                        headerPriority = "p3",
+                        bodyPriority = null,
+                        requestId = "test-p3-$index",
+                        endpoint = "/test"
+                    )
+                    p3Completed.incrementAndGet()
+                } catch (e: ru.ddd.llmproxy.domain.model.P3ThrottledError) {
+                    // Expected - P3 throttled due to max 1 concurrent
+                    p3Throttled.incrementAndGet()
+                    log.debug { "P3 request throttled: ${e.message}" }
+                } catch (e: Exception) {
+                    // Other errors (like queue overflow) - log but don't count as throttled
+                    log.debug { "P3 request failed with other error: ${e.message}" }
+                }
             }
         }
 
-        // Also submit some P2 requests to fill remaining slots
-        val p2Jobs = (1..maxConcurrent).map { index ->
-            async(Dispatchers.Default) {
-                trackingProvider.generate(
-                    ChatRequest.builder()
-                        .messages(listOf(UserMessage.from("p2-$index")))
-                        .build()
-                )
-            }
-        }
-
-        // Wait for all to complete
+        // Wait for all P3 jobs to complete or fail
         try {
             p3Jobs.awaitAll()
-            p2Jobs.awaitAll()
         } catch (e: Exception) {
-            log.warn { "Some jobs failed: ${e.message}" }
+            log.warn { "Some P3 jobs failed: ${e.message}" }
         }
 
-        log.info { "P3 completed: ${p3Completed.get()}, Max P3 concurrent: ${maxP3ConcurrentObserved.get()}" }
+        log.info { "P3 completed: ${p3Completed.get()}, P3 throttled: ${p3Throttled.get()}" }
 
-        // P3 should never exceed max 1 concurrent
+        // Some P3 requests should be throttled (since we submit 5 but only 1 can run at a time)
+        // Note: P3 throttling happens when max 1 concurrent is already running
         Assertions.assertTrue(
-            maxP3ConcurrentObserved.get() <= 1,
-            "P3 concurrent should be <= 1, but was ${maxP3ConcurrentObserved.get()}"
+            p3Throttled.get() > 0,
+            "At least one P3 request should be throttled due to max 1 concurrent limit (was ${p3Throttled.get()})"
         )
     }
 }

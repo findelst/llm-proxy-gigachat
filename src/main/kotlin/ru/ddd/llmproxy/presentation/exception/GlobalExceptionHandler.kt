@@ -13,6 +13,8 @@ import ru.ddd.llmproxy.domain.model.LlmProxyException
 import ru.ddd.llmproxy.domain.model.ProviderError
 import ru.ddd.llmproxy.domain.model.QueueOverflowError
 import ru.ddd.llmproxy.domain.model.QueueTimeoutError
+import ru.ddd.llmproxy.domain.model.PreemptionError
+import ru.ddd.llmproxy.domain.model.P3ThrottledError
 import java.util.UUID
 
 private val log = KotlinLogging.logger {}
@@ -87,6 +89,50 @@ class GlobalExceptionHandler {
                 requestId = requestId,
                 priority = ex.priority?.value,
                 waitTimeMs = ex.waitTimeMs
+            ))
+    }
+
+    /**
+     * Handles preemption errors (503 Service Unavailable).
+     */
+    @ExceptionHandler(PreemptionError::class)
+    fun handlePreemptionError(ex: PreemptionError, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.info {
+            "Request preempted: ${ex.priority.value} preempted by ${ex.preemptedBy.value} " +
+            "after ${ex.elapsedMs}ms (requestId=$requestId)"
+        }
+
+        return ResponseEntity
+            .status(HttpStatus.SERVICE_UNAVAILABLE)
+            .body(ErrorResponse.preemption(
+                requestId = requestId,
+                priority = ex.priority.value,
+                preemptedBy = ex.preemptedBy.value,
+                elapsedMs = ex.elapsedMs,
+                queuePosition = ex.queuePosition
+            ))
+    }
+
+    /**
+     * Handles P3 throttling errors (429 Too Many Requests).
+     */
+    @ExceptionHandler(P3ThrottledError::class)
+    fun handleP3ThrottledError(ex: P3ThrottledError, request: WebRequest): ResponseEntity<ErrorResponse> {
+        val requestId = getRequestId(request)
+
+        log.info {
+            "P3 request throttled: queuePosition=${ex.queuePosition}, " +
+            "estimatedWaitSeconds=${ex.estimatedWaitSeconds} (requestId=$requestId)"
+        }
+
+        return ResponseEntity
+            .status(HttpStatus.TOO_MANY_REQUESTS)
+            .body(ErrorResponse.p3Throttled(
+                requestId = requestId,
+                queuePosition = ex.queuePosition,
+                estimatedWaitSeconds = ex.estimatedWaitSeconds
             ))
     }
 

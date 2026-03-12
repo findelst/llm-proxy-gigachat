@@ -172,7 +172,7 @@ class CoroutinePriorityQueue<T : Any, R : Any>(
         updateQueueLength(priority, -1)
 
         // Try to acquire a slot from ConcurrencyController
-        val job = coroutineContext.job
+        val job = currentCoroutineContext().job
         val acquired = concurrencyController.tryAcquire(
             requestId = request.id,
             priority = priority,

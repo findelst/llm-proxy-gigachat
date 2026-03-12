@@ -57,10 +57,10 @@
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] Add preemption methods to QueueService interface in src/main/kotlin/ru/ddd/llmproxy/domain/service/QueueService.kt
-- [ ] T014 [US1] Integrate ConcurrencyController into CoroutinePriorityQueue in src/main/kotlin/ru/ddd/llmproxy/infrastructure/queue/CoroutinePriorityQueue.kt
-- [ ] T015 [US1] Implement P1 preemption logic in processRequest in src/main/kotlin/ru/ddd/llmproxy/infrastructure/queue/CoroutinePriorityQueue.kt
-- [ ] T016 [US1] Add slot release on request completion in CoroutinePriorityQueue
+- [X] T013 [US1] Add preemption methods to QueueService interface in src/main/kotlin/ru/ddd/llmproxy/domain/service/QueueService.kt
+- [X] T014 [US1] Integrate ConcurrencyController into CoroutinePriorityQueue in src/main/kotlin/ru/ddd/llmproxy/infrastructure/queue/CoroutinePriorityQueue.kt
+- [X] T015 [US1] Implement P1 preemption logic in processRequest in src/main/kotlin/ru/ddd/llmproxy/infrastructure/queue/CoroutinePriorityQueue.kt
+- [X] T016 [US1] Add slot release on request completion in CoroutinePriorityQueue
 
 **Checkpoint**: P1 preemption fully functional - can preempt P2/P3 when needed
 
@@ -73,14 +73,12 @@
 **Independent Test**: Send multiple P3 requests, verify only 1 executes at a time.
 
 ### Tests for User Story 2
-
-- [ ] T017 [P] [US2] Unit test for P3 throttling in ConcurrencyController in src/test/kotlin/ru/ddd/llmproxy/unit/infrastructure/queue/ConcurrencyControllerTest.kt
-- [ ] T018 [P] [US2] Integration test for P3 throttling scenario in src/test/kotlin/ru/ddd/llmproxy/integration/PriorityQueueConcurrencyTest.kt
+- [X] T017 [P] [US2] Unit test for P3 throttling in ConcurrencyController in src/test/kotlin/ru/ddd/llmproxy/unit/infrastructure/queue/ConcurrencyControllerTest.kt
+- [X] T018 [P] [US2] Integration test for P3 throttling scenario in src/test/kotlin/ru/ddd/llmproxy/integration/PriorityQueueConcurrencyTest.kt
 
 ### Implementation for User Story 2
-
-- [ ] T019 [US2] Add P3 max threads check in ConcurrencyController.tryAcquire in src/main/kotlin/ru/ddd/llmproxy/infrastructure/queue/ConcurrencyController.kt
-- [ ] T020 [US2] Update CoroutinePriorityQueue to check P3 limits before dispatch in src/main/kotlin/ru/ddd/llmproxy/infrastructure/queue/CoroutinePriorityQueue.kt
+- [X] T019 [US2] Add P3 max threads check in ConcurrencyController.tryAcquire in src/main/kotlin/ru/ddd/llmproxy/infrastructure/queue/ConcurrencyController.kt
+- [X] T020 [US2] Update CoroutinePriorityQueue to check P3 limits before dispatch in src/main/kotlin/ru/ddd/llmproxy/infrastructure/queue/CoroutinePriorityQueue.kt
 
 **Checkpoint**: P3 throttling functional - max 1 concurrent P3 request
 
@@ -93,15 +91,13 @@
 **Independent Test**: Preempt a P2 request, verify client receives proper HTTP 503 with preemption_error.
 
 ### Tests for User Story 3
-
-- [ ] T021 [P] [US3] Unit test for preemption error handling in src/test/kotlin/ru/ddd/llmproxy/unit/presentation/exception/GlobalExceptionHandlerTest.kt
-- [ ] T022 [P] [US3] Integration test for preemption error response in src/test/kotlin/ru/ddd/llmproxy/integration/ChatCompletionsEndpointTest.kt
+- [X] T021 [P] [US3] Unit test for preemption error handling in src/test/kotlin/ru/ddd/llmproxy/unit/presentation/exception/GlobalExceptionHandlerTest.kt
+- [X] T022 [P] [US3] Integration test for preemption error response in src/test/kotlin/ru/ddd/llmproxy/integration/ChatCompletionsEndpointTest.kt
 
 ### Implementation for User Story 3
-
-- [ ] T023 [US3] Add PreemptionErrorException and handle in GlobalExceptionHandler in src/main/kotlin/ru/ddd/llmproxy/presentation/exception/GlobalExceptionHandler.kt
-- [ ] T024 [US3] Create preemption error response DTO in src/main/kotlin/ru/ddd/llmproxy/presentation/dto/ErrorResponse.kt (extend existing)
-- [ ] T025 [US3] Complete request with CancellationException on preemption in CoroutinePriorityQueue
+- [X] T023 [US3] Add PreemptionErrorException and handle in GlobalExceptionHandler in src/main/kotlin/ru/ddd/llmproxy/presentation/exception/GlobalExceptionHandler.kt
+- [X] T024 [US3] Create preemption error response DTO in src/main/kotlin/ru/ddd/llmproxy/presentation/dto/ErrorResponse.kt (extend existing)
+- [X] T025 [US3] Complete request with CancellationException on preemption in CoroutinePriorityQueue
 
 **Checkpoint**: Graceful preemption error handling - clients receive clear error messages
 
@@ -114,28 +110,25 @@
 **Independent Test**: Verify metrics are available at /actuator/prometheus.
 
 ### Tests for User Story 4
-
-- [ ] T026 [P] [US4] Unit test for preemption metrics in src/test/kotlin/ru/ddd/llmproxy/unit/infrastructure/metrics/PrometheusMetricsTest.kt
-- [ ] T027 [P] [US4] Integration test for metrics exposure in src/test/kotlin/ru/ddd/llmproxy/integration/MetricsIntegrationTest.kt
+- [X] T026 [P] [US4] Unit test for preemption metrics in src/test/kotlin/ru/ddd/llmproxy/unit/infrastructure/metrics/PrometheusMetricsTest.kt
+- [X] T027 [P] [US4] Integration test for metrics exposure in src/test/kotlin/ru/ddd/llmproxy/integration/MetricsIntegrationTest.kt
 
 ### Implementation for User Story 4
-
-- [ ] T028 [US4] Add concurrent_requests gauge metric in PrometheusMetrics in src/main/kotlin/ru/ddd/llmproxy/infrastructure/metrics/PrometheusMetrics.kt
-- [ ] T029 [US4] Add preemption_total counter metric in PrometheusMetrics
-- [ ] T030 [US4] Add p3_throttled_total counter metric in PrometheusMetrics
-- [ ] T031 [US4] Update ConcurrencyController to record metrics on state changes
+- [X] T028 [US4] Add concurrent_requests gauge metric in PrometheusMetrics in src/main/kotlin/ru/ddd/llmproxy/infrastructure/metrics/PrometheusMetrics.kt
+- [X] T029 [US4] Add preemption_total counter metric in PrometheusMetrics
+- [X] T030 [US4] Add p3_throttled_total counter metric in PrometheusMetrics
+- [X] T031 [US4] Update ConcurrencyController to record metrics on state changes
 
 **Checkpoint**: All monitoring metrics available for operations
 
 ---
 
 ## Phase 7: Polish & Cross-Cutting Concerns
-
-- [ ] T032 [P] Add application.yml configuration example with new settings in src/main/resources/application.yml
-- [ ] T033 [P] Run all existing tests to verify no regressions
-- [ ] T034 Validate quickstart.md scenarios work end-to-end
-- [ ] T035 [P] Add logging for preemption events in CoroutinePriorityQueue
-- [ ] T036 Code cleanup and remove any debug logging
+- [X] T032 [P] Add application.yml configuration example with new settings in src/main/resources/application.yml
+- [X] T033 [P] Run all existing tests to verify no regressions
+- [X] T034 Validate quickstart.md scenarios work end-to-end
+- [X] T035 [P] Add logging for preemption events in CoroutinePriorityQueue
+- [X] T036 Code cleanup and remove any debug logging
 
 **Checkpoint**: Feature complete and ready for deployment
 

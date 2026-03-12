@@ -4,12 +4,15 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import ru.ddd.llmproxy.domain.model.ConcurrencyConfig
 
 /**
  * Configuration for Kotlin coroutines.
  */
 @Configuration
-class CoroutineConfig {
+class CoroutineConfig(
+    private val properties: LlmProxyProperties
+) {
 
     /**
      * IO dispatcher for blocking operations.
@@ -24,4 +27,11 @@ class CoroutineConfig {
      */
     @Bean
     fun defaultDispatcher(): CoroutineDispatcher = Dispatchers.Default
+
+    /**
+     * Provides ConcurrencyConfig as a Spring bean.
+     */
+    @Bean
+    fun concurrencyConfig(): ConcurrencyConfig =
+        ConcurrencyConfig.from(properties.queue)
 }

@@ -83,6 +83,52 @@ data class ErrorResponse(
                     message = message,
                     requestId = requestId
                 )
+
+            /**
+             * Creates an error detail for preemption errors.
+             */
+            fun preemption(
+                requestId: String,
+                priority: String,
+                preemptedBy: String,
+                elapsedMs: Long,
+                queuePosition: Int? = null
+            ): ErrorDetail {
+                val message = buildString {
+                    append("Request was preempted by higher priority request")
+                    append(" (priority=$priority, preempted_by=$preemptedBy, elapsed_ms=$elapsedMs")
+                    if (queuePosition != null) {
+                        append(", queue_position=$queuePosition")
+                    }
+                    append(")")
+                }
+                return ErrorDetail(
+                    code = "request_preempted",
+                    httpStatus = 503,
+                    message = message,
+                    requestId = requestId
+                )
+            }
+
+            /**
+             * Creates an error detail for P3 throttling errors.
+             */
+            fun p3Throttled(
+                requestId: String,
+                queuePosition: Int,
+                estimatedWaitSeconds: Long
+            ): ErrorDetail {
+                val message = buildString {
+                    append("Low priority requests are limited to 1 concurrent execution")
+                    append(" (queue_position=$queuePosition, estimated_wait_seconds=$estimatedWaitSeconds)")
+                }
+                return ErrorDetail(
+                    code = "p3_throttled",
+                    httpStatus = 429,
+                    message = message,
+                    requestId = requestId
+                )
+            }
         }
     }
 
@@ -129,5 +175,23 @@ data class ErrorResponse(
          */
         fun internal(requestId: String, message: String = "An unexpected error occurred"): ErrorResponse =
             ErrorResponse(ErrorDetail.internal(requestId, message))
+
+        /**
+         * Creates a preemption error response.
+         */
+        fun preemption(
+            requestId: String,
+            priority: String,
+            preemptedBy: String,
+            elapsedMs: Long,
+            queuePosition: Int? = null
+        ): ErrorResponse =
+            ErrorResponse(ErrorDetail.preemption(requestId, priority, preemptedBy, elapsedMs, queuePosition))
+
+        /**
+         * Creates a P3 throttling error response.
+         */
+        fun p3Throttled(requestId: String, queuePosition: Int, estimatedWaitSeconds: Long): ErrorResponse =
+            ErrorResponse(ErrorDetail.p3Throttled(requestId, queuePosition, estimatedWaitSeconds))
     }
 }

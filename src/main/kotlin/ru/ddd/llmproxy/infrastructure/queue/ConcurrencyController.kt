@@ -75,25 +75,28 @@ class ConcurrencyController(
             return false
         }
 
-        // Find an available slot
-        val slot = slots.find { !it.isOccupied }
-        if (slot == null) {
-            globalSemaphore.release()
-            log.warn { "No available slot found despite semaphore acquisition" }
-            return false
+        // Synchronized block to ensure atomic slot finding and allocation
+        synchronized(slots) {
+            // Find an available slot
+            val slot = slots.find { !it.isOccupied }
+            if (slot == null) {
+                globalSemaphore.release()
+                log.warn { "No available slot found despite semaphore acquisition" }
+                return false
+            }
+
+            // Create running request and allocate slot
+            val runningRequest = RunningRequest(
+                requestId = requestId,
+                priority = priority,
+                job = job,
+                queuedAt = queuedAt
+            )
+
+            slot.allocate(runningRequest)
+            runningRequests[requestId] = runningRequest
+            incrementCounter(priority)
         }
-
-        // Create running request and allocate slot
-        val runningRequest = RunningRequest(
-            requestId = requestId,
-            priority = priority,
-            job = job,
-            queuedAt = queuedAt
-        )
-
-        slot.allocate(runningRequest)
-        runningRequests[requestId] = runningRequest
-        incrementCounter(priority)
 
         // Update metrics
         updateMetrics()
@@ -108,23 +111,25 @@ class ConcurrencyController(
      * @param requestId The request to release
      */
     fun release(requestId: String) {
-        val runningRequest = runningRequests.remove(requestId)
-        if (runningRequest != null) {
-            // Find and release the slot
-            val slot = slots.find { it.currentRequest?.requestId == requestId }
-            slot?.release()
+        synchronized(slots) {
+            val runningRequest = runningRequests.remove(requestId)
+            if (runningRequest != null) {
+                // Find and release the slot
+                val slot = slots.find { it.currentRequest?.requestId == requestId }
+                slot?.release()
 
-            // Release global semaphore
-            globalSemaphore.release()
+                // Release global semaphore
+                globalSemaphore.release()
 
-            // Decrement counter
-            decrementCounter(runningRequest.priority)
+                // Decrement counter
+                decrementCounter(runningRequest.priority)
 
-            // Update metrics
-            updateMetrics()
-
-            log.debug { "Released slot for request $requestId" }
+                log.debug { "Released slot for request $requestId" }
+            }
         }
+
+        // Update metrics outside synchronized block
+        updateMetrics()
     }
 
     /**
