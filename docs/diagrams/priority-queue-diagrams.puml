@@ -1,0 +1,410 @@
+@startuml priority_queue_overview
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+
+title Приоритетная очередь LLM Proxy - Обзор архитектуры
+
+package "Входящие запросы" {
+    [HTTP Client] as Client
+    [ChatApplicationService] as Service
+}
+
+package "Приоритизация" {
+    [PriorityResolver] as Resolver
+    database "Priority\nP1|P2|P3" as Priority
+}
+
+package "Очередь" {
+    [PriorityChannel] as Channel
+    queue "PriorityBlockingQueue" as PBQ #lightblue
+}
+
+package "Обработка" {
+    [CoroutinePriorityQueue] as CPQ
+    [ConcurrencyController] as CC
+    [RetryExecutor] as Retry
+    [Provider API] as API
+}
+
+package "Метрики" {
+    database "MetricsPort" as Metrics
+}
+
+Client --> Service : POST /chat/completions
+Service --> Resolver : resolve(header, body)
+Resolver --> Priority
+Service --> Channel : trySend(request, priority, seq)
+Channel --> PBQ
+PBQ --> CPQ : receive()
+CPQ --> CC : tryAcquire()
+CC --> CPQ : slot allocated
+CPQ --> Retry : executeWithRetry()
+Retry --> API : HTTP call
+CPQ --> Metrics : record
+CC --> Metrics : update
+
+@enduml
+
+@startuml concurrency_controller_detail
+!theme plain
+skinparam backgroundColor #FEFEFE
+
+title ConcurrencyController - Детальная схема
+
+class ConcurrencyController {
+    - Semaphore globalSemaphore
+    - AtomicInteger p1Counter
+    - AtomicInteger p2Counter
+    - AtomicInteger p3Counter
+    - List<ExecutionSlot> slots
+    - ConcurrentHashMap<String, RunningRequest> runningRequests
+    + tryAcquire(requestId, priority, job, queuedAt): Boolean
+    + release(requestId): void
+    + preemptSlots(forPriority, slotsNeeded): List<String>
+    + stats: ConcurrencyStats
+}
+
+class ExecutionSlot {
+    - Int slotId
+    - RunningRequest? currentRequest
+    + allocate(request): void
+    + release(): void
+    + isOccupied: Boolean
+    + canBePreemptedBy(priority, config): Boolean
+}
+
+class RunningRequest {
+    + String requestId
+    + Priority priority
+    + Job job
+    + Instant startTime
+    + Instant queuedAt
+    + elapsedTimeMs: Long
+    + queueWaitMs: Long
+    + cancel(reason): void
+}
+
+class ConcurrencyConfig {
+    + Int maxConcurrent
+    + Int p1MaxThreads
+    + Int p3MaxThreads
+    + Boolean preemptionEnabled
+    + maxThreadsFor(priority): Int
+    + canPreempt(priority): Boolean
+    + preemptibleBy(priority): Set<Priority>
+}
+
+class ConcurrencyStats {
+    + Int totalRunning
+    + Int p1Running
+    + Int p2Running
+    + Int p3Running
+    + Int availableSlots
+    + canAccept(priority): Boolean
+}
+
+ConcurrencyController *-- ExecutionSlot : contains
+ConcurrencyController *-- ConcurrencyConfig : uses
+ConcurrencyController --> ConcurrencyStats : produces
+ExecutionSlot --> RunningRequest : holds
+RunningRequest --> Priority : has
+
+@enduml
+
+@startuml request_flow_sequence
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam maxMessageSize 150
+
+title Поток обработки запроса
+
+actor Client
+participant "ChatApplicationService" as Service
+participant "PriorityResolver" as Resolver
+participant "PriorityChannel" as Channel
+participant "CoroutinePriorityQueue" as Queue
+participant "ConcurrencyController" as CC
+participant "RetryExecutor" as Retry
+participant "Provider API" as API
+
+Client -> Service : POST /chat/completions
+activate Service
+
+Service -> Resolver : resolvePriority(header, body)
+activate Resolver
+Resolver --> Service : Priority.P2
+deactivate Resolver
+
+Service -> Channel : trySend(request, P2, seqNum)
+activate Channel
+
+alt Очередь заполнена
+    Channel --> Service : Failure(Overflow)
+    Service --> Client : 429 Queue Overflow
+else Успешно
+    Channel --> Service : Success
+
+    loop Consumer coroutine
+        Queue <- Channel : receive()
+        activate Queue
+
+        Queue -> CC : tryAcquire(requestId, P2, job)
+        activate CC
+
+        alt Слот доступен
+            CC --> Queue : true
+        else Нет слота (P1)
+            CC -> CC : preemptSlots(P1, 1)
+            CC --> Queue : true
+        else Нет слота (P3)
+            CC --> Queue : false
+            Queue --> Client : 429 P3 Throttled
+        end
+
+        Queue -> Retry : executeWithRetry(operation, P2)
+        activate Retry
+
+        loop Retry attempts
+            Retry -> API : HTTP Request
+            activate API
+
+            alt Успех
+                API --> Retry : Response
+            else Retryable Error (429, 5xx)
+                API --> Retry : Error
+                Retry -> Retry : delay(backoff + jitter)
+            else Non-retryable Error
+                API --> Retry : Error
+                Retry --> Queue : throw Error
+            end
+
+            deactivate API
+        end
+
+        Retry --> Queue : Result
+        deactivate Retry
+
+        Queue -> CC : release(requestId)
+        deactivate CC
+
+        Queue --> Service : Result
+        deactivate Queue
+    end
+
+    Service --> Client : Response
+end
+
+deactivate Channel
+deactivate Service
+
+@enduml
+
+@startuml preemption_flow
+!theme plain
+skinparam backgroundColor #FEFEFE
+
+title Механизм прерывания (Preemption)
+
+start
+
+:Incoming P1 request;
+
+if (tryAcquire(P1)) then (success)
+    :Execute P1 request;
+    stop
+else (no slot)
+    :All slots occupied;
+
+    if (preemptionEnabled?) then (yes)
+        :Find preemptable slots;
+
+        note right
+            Sort by:
+            1. Priority (P3 first)
+            2. Start time (oldest first)
+        end note
+
+        :Select N slots to preempt;
+
+        fork
+            :Cancel P3 coroutine job;
+            :Record preemption metric;
+            :Complete with PreemptionError;
+        fork again
+            :Release semaphore;
+        end fork
+
+        :Retry acquire;
+
+        if (acquired?) then (yes)
+            :Execute P1 request;
+            stop
+        else (no)
+            :Return QueueOverflowError;
+            stop
+        endif
+
+    else (no)
+        :Return QueueOverflowError;
+        stop
+    endif
+endif
+
+@enduml
+
+@startuml retry_mechanism
+!theme plain
+skinparam backgroundColor #FEFEFE
+
+title Retry с Exponential Backoff
+
+start
+
+:attempt = 0;
+:currentDelay = initialDelayMs;
+
+repeat
+    :Execute operation;
+
+    if (Success?) then (yes)
+        :Return result;
+        stop
+    else (no)
+        if (ProviderError?) then (yes)
+            if (isRetryable(status)?) then (yes)
+                if (attempt < maxAttempts - 1?) then (yes)
+                    :Calculate delay with jitter;
+                    note right
+                        jitter = random(-20%, +20%)
+                        delay = baseDelay + jitter
+                    end note
+
+                    :delay(delayMs);
+
+                    :currentDelay *= backoffMultiplier;
+                    :currentDelay = min(currentDelay, maxDelayMs);
+                    :attempt++;
+                else (no)
+                    :Record retry failure;
+                    :Throw last error;
+                    stop
+                endif
+            else (no)
+                :Throw non-retryable error;
+                stop
+            endif
+        else (no)
+            :Throw non-ProviderError exception;
+            stop
+        endif
+    endif
+
+repeat while (true)
+
+@enduml
+
+@startuml coroutine_structure
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+
+title Структура корутин
+
+object "SupervisorJob" as Root #lightblue {
+    parent = null
+}
+
+object "Consumer Coroutine" as Consumer #lightgreen {
+    job = launch
+    dispatcher = ioDispatcher
+}
+
+object "Cleanup Coroutine" as Cleanup #lightyellow {
+    job = launch
+    dispatcher = ioDispatcher
+}
+
+object "Request Job 1" as Req1 #pink {
+    job = launch
+    priority = P1
+}
+
+object "Request Job 2" as Req2 #pink {
+    job = launch
+    priority = P2
+}
+
+object "Request Job 3" as Req3 #pink {
+    job = launch
+    priority = P3
+}
+
+Root <|-- Consumer
+Root <|-- Cleanup
+Consumer <|-- Req1
+Consumer <|-- Req2
+Consumer <|-- Req3
+
+note right of Root
+    CoroutineScope(dispatcher + SupervisorJob)
+    - Изоляция сбоев
+    - Отмена дочерних при parent.cancel()
+end note
+
+note right of Consumer
+    Single consumer:
+    while (!isClosedForReceive) {
+        val item = channel.receive()
+        launch { processRequest(item) }
+    }
+end note
+
+note right of Cleanup
+    Periodic cleanup:
+    while (!isShutdown) {
+        delay(checkIntervalMs)
+        cleanupExpiredRequests()
+    }
+end note
+
+@enduml
+
+@startuml slot_allocation_state
+!theme plain
+skinparam backgroundColor #FEFEFE
+
+title Состояние слотов (пример)
+
+state "Slot 1: P1 Request" as S1 #ff6b6b {
+    state "Running: 500ms" as S1T
+}
+
+state "Slot 2: P2 Request" as S2 #ffd93d {
+    state "Running: 200ms" as S2T
+}
+
+state "Slot 3: P3 Request" as S3 #6bcb77 {
+    state "Running: 100ms" as S3T
+}
+
+state "Global Semaphore" as Sem #lightblue {
+    state "Available: 0/3" as SemState
+}
+
+state "Counters" as Counters #lightyellow {
+    state "p1Counter = 1" as C1
+    state "p2Counter = 1" as C2
+    state "p3Counter = 1" as C3
+}
+
+[*] --> S1
+[*] --> S2
+[*] --> S3
+
+note bottom of S3
+    Can be preempted by P1
+    (lowest priority)
+end note
+
+@enduml
