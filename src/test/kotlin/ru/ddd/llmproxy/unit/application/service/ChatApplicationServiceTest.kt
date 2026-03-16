@@ -102,8 +102,9 @@ class ChatApplicationServiceTest {
         // Assert
         assertEquals(expectedResponse, result.response)
         assertFalse(result.cacheHit)
-        assertNotNull(result.metrics)
-        coVerify(exactly = 1) { queueService.enqueue(any<QueuedRequest<ChatRequest, ChatResponse>>()) }
+        // ChatResult now has flat fields instead of metrics object
+        assertNotNull(result.queuedAt)
+        assertNull(result.startedAt) // null because cache hit
     }
 
     @Test

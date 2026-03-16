@@ -13,7 +13,7 @@ import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.*
-import ru.ddd.llmproxy.infrastructure.queue.CoroutinePriorityQueue
+import ru.ddd.llmproxy.infrastructure.queue.PriorityQueue
 import ru.ddd.llmproxy.domain.model.Priority
 
 private val log = KotlinLogging.logger {}
@@ -30,7 +30,7 @@ class ChatIntegrationTest {
     private lateinit var mockProvider: MockGigaChatProvider
 
     @Autowired
-    private lateinit var priorityQueue: CoroutinePriorityQueue<Any, Any>
+    private lateinit var priorityQueue: PriorityQueue<Any, Any>
 
     companion object {
         private const val CHAT_ENDPOINT = "/v1/chat/completions"

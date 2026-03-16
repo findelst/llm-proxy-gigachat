@@ -9,13 +9,11 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import ru.ddd.llmproxy.domain.model.Priority
-import ru.ddd.llmproxy.domain.model.QueueMetrics
 import ru.ddd.llmproxy.domain.model.QueueTimeoutError
 import ru.ddd.llmproxy.domain.model.QueuedRequest
-import ru.ddd.llmproxy.domain.model.RetryConfig
 import ru.ddd.llmproxy.infrastructure.config.LlmProxyProperties
+import ru.ddd.llmproxy.infrastructure.config.QueueConfig
 import ru.ddd.llmproxy.infrastructure.metrics.PrometheusMetrics
-import ru.ddd.llmproxy.infrastructure.queue.PriorityChannel
 import java.time.Instant
 
 /**
@@ -29,105 +27,13 @@ import java.time.Instant
  */
 class QueueTimeoutTest {
 
-    private lateinit var channel: PriorityChannel<QueuedRequest<String, String>>
     private lateinit var meterRegistry: SimpleMeterRegistry
     private lateinit var metrics: PrometheusMetrics
 
     @BeforeEach
     fun setUp() {
-        channel = PriorityChannel(capacity = 10)
         meterRegistry = SimpleMeterRegistry()
         metrics = PrometheusMetrics(meterRegistry)
-    }
-
-    // ==================== removeExpired Tests ====================
-
-    @Test
-    fun `should remove expired items from queue`() = runTest {
-        // Create an "old" request (queued 11 minutes ago)
-        val oldRequest = createRequest("old", Priority.P3, Instant.now().minusMillis(11 * 60 * 1000))
-        val newRequest = createRequest("new", Priority.P3, Instant.now())
-
-        channel.trySend(oldRequest, Priority.P3.level, 1)
-        channel.trySend(newRequest, Priority.P3.level, 2)
-
-        assertEquals(2, channel.size)
-
-        // Remove items older than 10 minutes
-        val maxAgeMs = 10 * 60 * 1000L // 10 minutes
-        val expiredItems = mutableListOf<ru.ddd.llmproxy.infrastructure.queue.PrioritizedItem<QueuedRequest<String, String>>>()
-
-        val removedCount = channel.removeExpired(
-            maxAgeMs = maxAgeMs,
-            getAgeMs = { request ->
-                val queuedAt = request.metrics.queuedAt
-                Instant.now().toEpochMilli() - queuedAt.toEpochMilli()
-            },
-            onExpired = { expiredItems.add(it) }
-        )
-
-        assertEquals(1, removedCount)
-        assertEquals(1, expiredItems.size)
-        assertEquals("old", expiredItems[0].item.payload)
-        assertEquals(1, channel.size)
-        assertEquals("new", channel.receive().item.payload)
-    }
-
-    @Test
-    fun `should not remove items within timeout`() = runTest {
-        // Create requests that are within timeout
-        val request1 = createRequest("recent1", Priority.P2, Instant.now().minusMillis(5 * 60 * 1000))
-        val request2 = createRequest("recent2", Priority.P2, Instant.now().minusMillis(3 * 60 * 1000))
-
-        channel.trySend(request1, Priority.P2.level, 1)
-        channel.trySend(request2, Priority.P2.level, 2)
-
-        // Remove items older than 10 minutes
-        val maxAgeMs = 10 * 60 * 1000L
-        val removedCount = channel.removeExpired(
-            maxAgeMs = maxAgeMs,
-            getAgeMs = { request ->
-                Instant.now().toEpochMilli() - request.metrics.queuedAt.toEpochMilli()
-            },
-            onExpired = { }
-        )
-
-        assertEquals(0, removedCount)
-        assertEquals(2, channel.size)
-    }
-
-    @Test
-    fun `should handle empty queue gracefully`() = runTest {
-        val maxAgeMs = 10 * 60 * 1000L
-        val removedCount = channel.removeExpired(
-            maxAgeMs = maxAgeMs,
-            getAgeMs = { Instant.now().toEpochMilli() - it.metrics.queuedAt.toEpochMilli() },
-            onExpired = { fail("Should not call onExpired for empty queue") }
-        )
-
-        assertEquals(0, removedCount)
-    }
-
-    @Test
-    fun `should remove multiple expired items`() = runTest {
-        // Create multiple old requests
-        val old1 = createRequest("old1", Priority.P1, Instant.now().minusMillis(15 * 60 * 1000))
-        val old2 = createRequest("old2", Priority.P2, Instant.now().minusMillis(12 * 60 * 1000))
-        val new = createRequest("new", Priority.P3, Instant.now())
-
-        channel.trySend(old1, Priority.P1.level, 1)
-        channel.trySend(old2, Priority.P2.level, 2)
-        channel.trySend(new, Priority.P3.level, 3)
-
-        val maxAgeMs = 10 * 60 * 1000L
-        val removedCount = channel.removeExpired(
-            maxAgeMs = maxAgeMs,
-            getAgeMs = { Instant.now().toEpochMilli() - it.metrics.queuedAt.toEpochMilli() },
-            onExpired = { }
-        )
-
-        assertEquals(2, removedCount)
-        assertEquals(1, channel.size)
     }
 
     // ==================== Timeout Metrics Tests ====================
@@ -208,6 +114,36 @@ class QueueTimeoutTest {
         }
     }
 
+    // ==================== QueueConfig Tests ====================
+
+    @Test
+    fun `should create QueueConfig from LlmProxyProperties`() {
+        val props = LlmProxyProperties(
+            queue = LlmProxyProperties.QueueConfig(
+                timeoutMinutes = 5,
+                timeoutCheckIntervalMs = 30000,
+                maxLength = 50,
+                maxConcurrent = 4
+            )
+        )
+        val config = QueueConfig.from(props.queue)
+
+        assertEquals(5L, config.timeoutMinutes)
+        assertEquals(30000L, config.timeoutCheckIntervalMs)
+        assertEquals(50, config.maxLength)
+        assertEquals(4, config.maxConcurrent)
+    }
+
+    @Test
+    fun `should create QueueConfig with defaults`() {
+        val config = QueueConfig.DEFAULT
+
+        assertEquals(10L, config.timeoutMinutes)
+        assertEquals(60000L, config.timeoutCheckIntervalMs)
+        assertEquals(100, config.maxLength)
+        assertEquals(3, config.maxConcurrent)
+    }
+
     // ==================== QueueTimeoutException Tests ====================
 
     @Test
@@ -234,37 +170,70 @@ class QueueTimeoutTest {
         assertNull(exception.waitTimeMs)
     }
 
+    // ==================== QueuedRequest Timeout Tests ====================
+
+    @Test
+    fun `should create QueuedRequest with queuedAt timestamp`() {
+        val request = createRequest("test", Priority.P1)
+
+        assertNotNull(request.queuedAt)
+        assertTrue(request.queuedAt.isBefore(Instant.now().plusMillis(1)))
+    }
+
+    @Test
+    fun `should calculate queueWaitMs correctly`() {
+        val queuedAt = Instant.now().minusMillis(1000)
+        val startedAt = Instant.now()
+
+        val request = QueuedRequest<String, String>(
+            id = "test",
+            priority = Priority.P1,
+            payload = "test",
+            queuedAt = queuedAt,
+            startedAt = startedAt
+        )
+
+        // Queue wait should be approximately 1000ms (with some tolerance for timing)
+        val waitMs = request.queueWaitMs
+        assertNotNull(waitMs)
+        assertTrue(waitMs!! >= 950 && waitMs <= 1050, "Expected ~1000ms, got $waitMs")
+    }
+
+    @Test
+    fun `should track processing state`() {
+        val request = createRequest("test", Priority.P1)
+
+        assertNull(request.startedAt)
+        assertNull(request.completedAt)
+
+        request.startProcessing()
+        assertNotNull(request.startedAt)
+        assertNull(request.completedAt)
+
+        request.completeProcessing()
+        assertNotNull(request.completedAt)
+    }
+
     // ==================== Integration-style Tests ====================
 
     @Test
     fun `should complete expired request exceptionally`() = runTest {
         val oldRequest = createRequest("old", Priority.P1, Instant.now().minusMillis(11 * 60 * 1000))
-        channel.trySend(oldRequest, Priority.P1.level, 1)
 
-        var completedExceptionally = false
-        var caughtException: QueueTimeoutError? = null
-
-        // Remove and complete with exception
-        channel.removeExpired(
-            maxAgeMs = 10 * 60 * 1000L,
-            getAgeMs = { Instant.now().toEpochMilli() - it.metrics.queuedAt.toEpochMilli() },
-            onExpired = { item ->
-                val request = item.item
-                request.completeExceptionally(
-                    QueueTimeoutError(
-                        message = "Request timed out after waiting too long",
-                        priority = request.priority,
-                        waitTimeMs = Instant.now().toEpochMilli() - request.metrics.queuedAt.toEpochMilli()
-                    )
-                )
-            }
+        // Complete with timeout exception
+        oldRequest.completeExceptionally(
+            QueueTimeoutError(
+                message = "Request timed out after waiting too long",
+                priority = oldRequest.priority,
+                waitTimeMs = Instant.now().toEpochMilli() - oldRequest.queuedAt.toEpochMilli()
+            )
         )
 
         // Verify the deferred is completed exceptionally
         val result = runCatching { oldRequest.deferred.await() }
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull() is QueueTimeoutError)
-        caughtException = result.exceptionOrNull() as QueueTimeoutError
+        val caughtException = result.exceptionOrNull() as QueueTimeoutError
         assertEquals(Priority.P1, caughtException.priority)
     }
 
@@ -279,12 +248,8 @@ class QueueTimeoutTest {
             id = "test-${System.nanoTime()}",
             priority = priority,
             payload = payload,
-            metrics = QueueMetrics(
-                requestId = "test",
-                priority = priority,
-                endpoint = "/test",
-                queuedAt = queuedAt
-            ),
+            endpoint = "/test",
+            queuedAt = queuedAt,
             deferred = CompletableDeferred()
         )
     }

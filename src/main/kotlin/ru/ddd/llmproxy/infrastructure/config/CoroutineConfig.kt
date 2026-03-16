@@ -4,7 +4,6 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import ru.ddd.llmproxy.domain.model.ConcurrencyConfig
 
 /**
  * Configuration for Kotlin coroutines.
@@ -29,9 +28,9 @@ class CoroutineConfig(
     fun defaultDispatcher(): CoroutineDispatcher = Dispatchers.Default
 
     /**
-     * Provides ConcurrencyConfig as a Spring bean.
+     * Provides unified QueueConfig as a Spring bean.
      */
     @Bean
-    fun concurrencyConfig(): ConcurrencyConfig =
-        ConcurrencyConfig.from(properties.queue)
+    fun queueConfig(): QueueConfig =
+        QueueConfig.from(properties.queue)
 }

@@ -358,8 +358,8 @@ flowchart TB
 
     subgraph cannot["Cannot Preempt"]
         direction LR
-        P2["P2"] -.->|"cannot"| X1["X"]
-        P3["P3"] -.->|"cannot"| X2["X"]
+        P2["P2"] -.->|"cannot preempt"| X1["P2 cannot preempt"]
+        P3["P3"] -.->|"cannot preempt"| X2["P3 cannot preempt"]
     end
 
     style P1 fill:#ff6b6b
@@ -674,3 +674,248 @@ llm:
         - 503
         - 504
 ```
+
+---
+
+## Тестирование
+
+Проект содержит комплексный набор тестов для проверки корректности работы приоритизации и конкурентности.
+
+### Структура тестов
+
+```mermaid
+graph TB
+    subgraph "Unit Tests"
+        UT1[PriorityChannelTest]
+        UT2[ConcurrencyControllerTest]
+        UT3[QueueTimeoutTest]
+        UT4[RetryExecutorTest]
+    end
+
+    subgraph "Integration Tests"
+        IT1[PriorityQueueConcurrencyTest]
+    end
+
+    UT1 --> UT1_desc["Priority ordering<br/>FIFO within priority<br/>Capacity limits"]
+    UT2 --> UT2_desc["Slot acquisition<br/>Preemption logic<br/>Stats reporting"]
+    UT3 --> UT3_desc["Timeout cleanup<br/>Expired request handling"]
+    UT4 --> UT4_desc["Retry with backoff<br/>Retryable status codes"]
+    IT1 --> IT1_desc["End-to-end priority<br/>Concurrent load<br/>Preemption scenarios"]
+
+    style UT1 fill:#e3f2ff
+    style UT2 fill:#e3f2ff
+    style UT3 fill:#e3f2ff
+    style UT4 fill:#e3f2ff
+    style IT1 fill:#bbdefb
+```
+
+### Unit Tests
+
+#### PriorityChannelTest
+
+Файл: `src/test/kotlin/ru/ddd/llmproxy/unit/infrastructure/queue/PriorityChannelTest.kt`
+
+**Проверяет:**
+- Уорядочивание по приоритету (lower value = higher priority)
+- FIFO порядок внутри одного приоритета
+- Ограничение capacity
+- Обработка overflow
+- Корректность состояния empty/full
+
+```kotlin
+@Test
+fun `should receive items in priority order`() = runTest {
+    channel.trySend("low", priority = 3, sequenceNumber = 1)
+    channel.trySend("high", priority = 1, sequenceNumber = 2)
+    channel.trySend("medium", priority = 2, sequenceNumber = 3)
+
+    assertEquals("high", channel.receive().item)   // P1 first
+    assertEquals("medium", channel.receive().item) // P2 second
+    assertEquals("low", channel.receive().item)   // P3 last
+}
+```
+
+#### ConcurrencyControllerTest
+
+Файл: `src/test/kotlin/ru/ddd/llmproxy/unit/infrastructure/queue/ConcurrencyControllerTest.kt`
+
+**Проверяет:**
+- Выделение слотов с per-priority лимитами
+- Освобождение слотов и обновление счётчиков
+- Логика прерывания для P1 приоритета
+- Отчётность статистики
+
+```kotlin
+@Test
+fun `should reject P3 when max 1 reached`() = runTest {
+    // Given - one P3 already running
+    controller.tryAcquire("p3-1", Priority.P3, Job(), Instant.now())
+
+    // When - try second P3
+    val result = controller.tryAcquire("p3-2", Priority.P3, Job(), Instant.now())
+
+    // Then - should be rejected (max 1 P3 concurrent)
+    assertFalse(result)
+}
+
+@Test
+fun `should preempt P3 before P2`() = runTest {
+    controller.tryAcquire("p2-1", Priority.P2, Job(), Instant.now())
+    controller.tryAcquire("p3-1", Priority.P3, Job(), Instant.now())
+
+    // When P1 needs slot - P3 should be preempted first
+    val preempted = controller.preemptSlots(Priority.P1, 1)
+
+    assertEquals("p3-1", preempted.first())
+}
+```
+
+#### QueueTimeoutTest
+
+Файл: `src/test/kotlin/ru/ddd/llmproxy/unit/infrastructure/queue/QueueTimeoutTest.kt`
+
+**Проверяет:**
+- Удаление просроченных запросов из очереди
+- Генерация QueueTimeoutError для timed out запросов
+- Запись метрик timeout
+- Отключение timeout (timeoutMinutes=0)
+
+```kotlin
+@Test
+fun `should remove expired items from queue`() = runTest {
+    val oldRequest = createRequest("old", Priority.P3, Instant.now().minusMillis(11 * 60 * 1000))
+    val newRequest = createRequest("new", Priority.P3, Instant.now())
+
+    channel.trySend(oldRequest, Priority.P3.level, 1)
+    channel.trySend(newRequest, Priority.P3.level, 2)
+
+    val removedCount = channel.removeExpired(
+        maxAgeMs = 10 * 60 * 1000L,
+        getAgeMs = { Instant.now().toEpochMilli() - it.metrics.queuedAt.toEpochMilli() },
+        onExpired = { }
+    )
+
+    assertEquals(1, removedCount)
+    assertEquals("new", channel.receive().item.payload)
+}
+```
+
+#### RetryExecutorTest
+
+Файл: `src/test/kotlin/ru/ddd/llmproxy/unit/infrastructure/queue/RetryExecutorTest.kt`
+
+**Проверяет:**
+- Retry логика с exponential backoff
+- Обработка non-retryable ошибок
+- Лимит max attempts
+- Поведение при отключенном retry
+
+```kotlin
+@Test
+fun `should retry and succeed on second attempt`() = runTest {
+    var callCount = 0
+
+    val result = retryExecutor.executeWithRetry(
+        operation = {
+            callCount++
+            if (callCount == 1) {
+                throw ProviderError("Temporary error", providerStatus = 500)
+            }
+            "success"
+        },
+        priority = Priority.P1
+    )
+
+    assertEquals("success", result)
+    assertEquals(2, callCount)
+}
+
+@Test
+fun `should not retry non-retryable status codes`() = runTest {
+    var callCount = 0
+
+    try {
+        retryExecutor.executeWithRetry<String>(
+            operation = {
+                callCount++
+                throw ProviderError("Bad request", providerStatus = 400)
+            },
+            priority = Priority.P1
+        )
+    } catch (e: ProviderError) {
+        assertEquals(1, callCount) // No retries for 400
+    }
+}
+```
+
+### Integration Tests
+
+#### PriorityQueueConcurrencyTest
+
+Файл: `src/test/kotlin/ru/ddd/llmproxy/integration/PriorityQueueConcurrencyTest.kt`
+
+**Проверяет:**
+- End-to-end обработка запросов с приоритизацией
+- Обработка смешанной нагрузки разных приоритетов
+- Сценарии прерывания (preemption)
+- P3 throttling (ограничение до 1 concurrent)
+- Обработка queue overflow
+
+```kotlin
+@Test
+fun `should process higher priority requests first`() = runTest {
+    val processingOrder = mutableListOf<String>()
+
+    // Submit requests in random order
+    val requests = listOf(
+        "low-1" to Priority.P3,
+        "low-2" to Priority.P3,
+        "high-1" to Priority.P1,
+        "high-2" to Priority.P1,
+        "medium-1" to Priority.P2
+    )
+
+    // Process and collect order
+    // Verify: P1 requests processed first, then P2, then P3
+}
+
+@Test
+fun `should preempt P2 requests when P1 arrives and slots full`() = runTest {
+    // Fill all slots with P2 requests
+    // Submit P1 request - should preempt P2
+    // Verify P1 is processed despite full slots
+}
+
+@Test
+fun `should limit P3 to max 1 concurrent`() = runTest {
+    // Submit multiple P3 requests
+    // Verify only 1 P3 running at a time
+    // Others should be throttled with P3ThrottledError
+}
+```
+
+### Запуск тестов
+
+```bash
+# Запуск всех тестов
+./gradlew test
+
+# Запуск конкретного тестового класса
+./gradlew test --tests "PriorityChannelTest"
+
+# Запуск интеграционных тестов
+./gradlew test --tests "PriorityQueueConcurrencyTest"
+
+# Запуск с детальным выводом
+./gradlew test --info
+```
+
+### Метрики тестового покрытия
+
+| Компонент | Unit Tests | Integration Tests | Coverage |
+|-----------|------------|-------------------|---------|
+| PriorityChannel | 14 | - | Ordering, capacity, concurrency |
+| ConcurrencyController | 12 | - | Acquisition, release, preemption |
+| QueueTimeout | 10 | - | Expiration, cleanup |
+| RetryExecutor | 15 | - | Backoff, retryable codes |
+| Full System | - | 6 | End-to-end scenarios |

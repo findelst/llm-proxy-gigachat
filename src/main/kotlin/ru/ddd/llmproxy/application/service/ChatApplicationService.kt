@@ -9,11 +9,11 @@ import ru.ddd.llmproxy.application.port.MetricsPort
 import ru.ddd.llmproxy.domain.model.CacheKey
 import ru.ddd.llmproxy.domain.model.Priority
 import ru.ddd.llmproxy.domain.model.QueuedRequest
-import ru.ddd.llmproxy.domain.model.QueueMetrics
 import ru.ddd.llmproxy.domain.repository.CacheRepository
 import ru.ddd.llmproxy.domain.service.QueueService
 import ru.ddd.llmproxy.infrastructure.cache.CacheKeyGenerator
 import ru.ddd.llmproxy.infrastructure.config.LlmProxyProperties
+import java.time.Instant
 
 private val log = KotlinLogging.logger {}
 
@@ -56,7 +56,7 @@ class ChatApplicationService(
         val priority = priorityResolver.resolve(headerPriority, bodyPriority)
         log.debug { "Processing request $requestId with priority $priority" }
 
-        val queueMetrics = QueueMetrics.create(requestId, priority, endpoint)
+        val queuedAt = Instant.now()
 
         // Try cache first
         if (properties.cache.enabled) {
@@ -68,7 +68,10 @@ class ChatApplicationService(
                 metricsPort.recordRequest(endpoint, priority, "success")
                 return ChatResult(
                     response = cached,
-                    metrics = queueMetrics.startProcessing().completeProcessing(),
+                    queuedAt = queuedAt,
+                    startedAt = Instant.now(),
+                    completedAt = Instant.now(),
+                    retryAttempts = 0,
                     cacheHit = true
                 )
             }
@@ -82,30 +85,32 @@ class ChatApplicationService(
             endpoint = endpoint
         )
 
-        // Track queue wait time - queueMetrics already has queuedAt from creation
+        // Process via queue
         val response = queueService.enqueue(queuedRequest)
 
-        // Calculate queue wait time from queued request metrics
-        val completedMetrics = queuedRequest.metrics.completeProcessing()
-        val resultQueueWaitMs = completedMetrics.queueWaitMs
-            ?: java.time.Duration.between(queueMetrics.queuedAt, java.time.Instant.now()).toMillis()
+        // Calculate metrics from queued request
+        val resultQueueWaitMs = queuedRequest.queueWaitMs
+            ?: java.time.Duration.between(queuedAt, java.time.Instant.now()).toMillis()
 
         // Record metrics
         metricsPort.recordRequest(endpoint, priority, "success")
         metricsPort.recordQueueWait(endpoint, priority, resultQueueWaitMs)
-        completedMetrics.providerLatencyMs?.let {
+        queuedRequest.providerLatencyMs?.let {
             metricsPort.recordProviderLatency(endpoint, priority, it)
         }
 
         log.info {
             "Request $requestId completed via queue: " +
                     "queueWait=${resultQueueWaitMs}ms, " +
-                    "providerLatency=${completedMetrics.providerLatencyMs}ms"
+                    "providerLatency=${queuedRequest.providerLatencyMs}ms"
         }
 
         val result = ChatResult(
             response = response,
-            metrics = completedMetrics,
+            queuedAt = queuedRequest.queuedAt,
+            startedAt = queuedRequest.startedAt,
+            completedAt = queuedRequest.completedAt,
+            retryAttempts = queuedRequest.retryAttempts,
             cacheHit = false
         )
 
@@ -124,7 +129,20 @@ class ChatApplicationService(
      */
     data class ChatResult(
         val response: ChatResponse,
-        val metrics: QueueMetrics,
+        val queuedAt: Instant,
+        val startedAt: Instant?,
+        val completedAt: Instant?,
+        val retryAttempts: Int,
         val cacheHit: Boolean
-    )
+    ) {
+        val queueWaitMs: Long?
+            get() = startedAt?.let { java.time.Duration.between(queuedAt, it).toMillis() }
+
+        val providerLatencyMs: Long?
+            get() = completedAt?.let { end ->
+                startedAt?.let { start ->
+                    java.time.Duration.between(start, end).toMillis()
+                }
+            }
+    }
 }

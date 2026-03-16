@@ -9,6 +9,7 @@ import ru.ddd.llmproxy.application.adapter.GigaChatRequestAdapter
 import ru.ddd.llmproxy.application.adapter.GigaChatResponseAdapter
 import ru.ddd.llmproxy.application.service.ChatApplicationService
 import ru.ddd.llmproxy.domain.model.InvalidRequestError
+import ru.ddd.llmproxy.domain.model.Priority
 import java.util.UUID
 
 private val log = KotlinLogging.logger {}
@@ -58,14 +59,17 @@ class ChatController(
         // Convert langchain4j response to GigaChat native format
         val response = GigaChatResponseAdapter.toCompletionResponse(result.response)
 
+        // Resolve priority for headers (from the service result or header)
+        val priority = headerPriority?.let { Priority.resolveOrNull(it) } ?: Priority.P2
+
         return ResponseEntity.ok()
             .header("x-llm-proxy-request-id", requestId)
-            .header("x-llm-proxy-priority", result.metrics.priority.value)
+            .header("x-llm-proxy-priority", priority.value)
             .apply {
-                result.metrics.queueWaitMs?.let {
+                result.queueWaitMs?.let {
                     header("x-llm-proxy-queue-wait-ms", it.toString())
                 }
-                result.metrics.providerLatencyMs?.let {
+                result.providerLatencyMs?.let {
                     header("x-llm-proxy-provider-latency-ms", it.toString())
                 }
             }
@@ -104,12 +108,15 @@ class ChatController(
             endpoint = "/v1/chat/invoke"
         )
 
+        // Resolve priority for response
+        val priority = headerPriority?.let { Priority.resolveOrNull(it) } ?: Priority.P2
+
         // Wrap with metrics in InvokeResponse
         val metrics = ru.ddd.llmproxy.presentation.dto.InvokeResponse.Metrics(
-            queueWaitMs = result.metrics.queueWaitMs,
-            providerLatencyMs = result.metrics.providerLatencyMs,
-            priority = result.metrics.priority.value,
-            endpoint = result.metrics.endpoint
+            queueWaitMs = result.queueWaitMs,
+            providerLatencyMs = result.providerLatencyMs,
+            priority = priority.value,
+            endpoint = "/v1/chat/invoke"
         )
 
         val invokeResponse = ru.ddd.llmproxy.presentation.dto.InvokeResponse.from(
@@ -120,7 +127,7 @@ class ChatController(
 
         return ResponseEntity.ok()
             .header("x-llm-proxy-request-id", requestId)
-            .header("x-llm-proxy-priority", result.metrics.priority.value)
+            .header("x-llm-proxy-priority", priority.value)
             .header("x-request-id", requestId)
             .body(invokeResponse)
     }
